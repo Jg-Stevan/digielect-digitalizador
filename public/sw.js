@@ -2,7 +2,7 @@
 // [FASE-8] Service Worker versionado. La versión viaja en el nombre
 // de caché: publicar una versión nueva = caché nueva (sin skipWaiting
 // silencioso: la app muestra el banner "Nueva versión disponible").
-const VERSION = "v1.0.0+motorc225fbea";
+const VERSION = "v1.1.0+motorc225fbea";
 const CACHE_SHELL = `digi-e14-shell-${VERSION}`;
 const CACHE_MOTOR = `digi-e14-motor-${VERSION}`;
 const CACHE_RUNTIME = `digi-e14-runtime-${VERSION}`;
