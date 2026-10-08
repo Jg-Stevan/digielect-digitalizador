@@ -18,6 +18,7 @@
 
 import { toast } from "@/hooks/use-toast";
 import { rutaApi } from "@/lib/env";
+import type { OcrRuteo } from "@/lib/contrato/types";
 import {
   allActasCola,
   deleteActaCola,
@@ -62,6 +63,9 @@ export interface DatosEncolado {
   /** [OLA4 4.1] Id del acta previa (misma huella QR, ranura no
    * VALIDADO) que este ítem debe reemplazar al sincronizarse. */
   reemplazoDe?: string | null;
+  /** [FASE-5] Sugerencia de ruteo por OCR de zonas (hint; el
+   * servidor valida — viaja con el acta para la ingesta nueva). */
+  ocrRuteo?: OcrRuteo | null;
 }
 
 export type ResultadoEncolado =
@@ -124,6 +128,7 @@ export async function encolarActa(
     modoManual: datos.modoManual ?? false,
     envioAdvertencia: datos.envioAdvertencia ?? false,
     reemplazoDe: datos.reemplazoDe ?? null,
+    ocrRuteo: datos.ocrRuteo ?? null,
   } as ActaQueueItem;
 
   await putActaCola(item);

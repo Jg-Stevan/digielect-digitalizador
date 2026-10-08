@@ -20,6 +20,8 @@ import {
 import { cn } from "@/lib/utils";
 import { useDigitalizador } from "@/lib/digitalizador/store";
 import { precalentarEscaner } from "@/lib/digitalizador/escaner";
+// [FASE-5] Precalentar el OCR de ruteo (tesseract local) en idle
+import { precalentarOcrRuteo } from "@/lib/ocr/motor-ocr";
 import { desbloquearAudio } from "@/lib/digitalizador/feedback";
 import type { Vista } from "@/lib/digitalizador/types";
 import PantallaCaptura from "./PantallaCaptura";
@@ -121,7 +123,10 @@ export function DigitalizadorApp({ onExit, onIngested }: DigitalizadorAppProps =
     // Precalentar el worker del escáner cuando el navegador esté libre
     if (typeof window !== "undefined" && "requestIdleCallback" in window) {
       const ric = window as Window & { requestIdleCallback: (cb: () => void) => number };
-      const id = ric.requestIdleCallback(() => precalentarEscaner());
+      const id = ric.requestIdleCallback(() => {
+        precalentarEscaner();
+        precalentarOcrRuteo();
+      });
       return () => {
         if ("cancelIdleCallback" in window) {
           (window as Window & { cancelIdleCallback: (id: number) => void }).cancelIdleCallback(id);

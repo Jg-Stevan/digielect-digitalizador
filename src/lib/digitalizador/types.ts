@@ -190,6 +190,9 @@ export interface ActaPayload {
    * VALIDADO) que este re-envío debe REEMPLAZAR en el servidor
    * (flujo B-02 / RN-03 rescaneo). Null = envío nuevo. */
   reemplazoDe?: string | null;
+  /** [FASE-5] Sugerencia de ruteo por OCR de zonas (solo campos
+   * impresos). HINT: el servidor valida contra el catálogo. */
+  ocrRuteo?: import("@/lib/contrato/types").OcrRuteo | null;
 }
 
 /** Respuesta del servidor al enviar un acta */

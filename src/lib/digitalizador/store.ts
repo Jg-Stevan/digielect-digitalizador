@@ -63,6 +63,7 @@ import {
 } from "./feedback";
 import { obtenerIndiceActas } from "@/lib/integracion-captura";
 import type { PayloadIngesta } from "@/lib/integracion-captura";
+import type { OcrRuteo } from "@/lib/contrato/types";
 // [C-17] Identificación AUDITADA (rol C): HAMMING1 + cruce encabezado
 import { identificarActa } from "@/lib/identificacion-acta";
 
@@ -180,6 +181,11 @@ interface DigitalizadorState {
    * exitoso (null = sin avance reciente / escaneo libre). Lo pinta la
    * pantalla de ÉXITO mientras el contexto ya quedó avanzado. */
   siguienteObjetivo: AnuncioSiguiente | null;
+  /** [FASE-5] Sugerencia de ruteo por OCR de zonas (solo campos
+   * impresos). HINT: el servidor valida contra el catálogo. */
+  ocrRuteo: OcrRuteo | null;
+  /** [FASE-5] true mientras el OCR de ruteo corre en segundo plano. */
+  ocrRuteoEnCurso: boolean;
 
   // Acciones de navegación
   irA: (vista: Vista) => void;
@@ -218,6 +224,8 @@ interface DigitalizadorState {
   setRotacion: (rotacion: EstadoEdicion["rotacion"]) => void;
   /** Deja la captura finalizada (procesada) lista para enviar */
   finalizarCaptura: (c: CapturaActual) => void;
+  /** [FASE-5] Fija/reinicia la sugerencia de ruteo (OCR de zonas). */
+  setOcrRuteo: (r: OcrRuteo | null, enCurso?: boolean) => void;
   repetirFoto: () => void;
   analizarCaptura: () => Promise<AnalisisVLM | null>;
   enviarActa: (opts: {
@@ -415,6 +423,8 @@ export const useDigitalizador = create<DigitalizadorState>((set, get) => ({
   senalesLocales: SENALES_INICIALES,
   contadoresCola: { pendientes: 0, sincronizadasTotal: 0, errores: 0 },
   siguienteObjetivo: null,
+  ocrRuteo: null,
+  ocrRuteoEnCurso: false,
   // ----------------------------------------------------------
   // Navegación
   // ----------------------------------------------------------
@@ -560,11 +570,11 @@ export const useDigitalizador = create<DigitalizadorState>((set, get) => ({
   },
 
   irACapturaDesdeControl: (ctx) => {
-    set({ contexto: ctx, edicion: null, captura: null, analisis: null, ultimoEnvio: null, senalesLocales: SENALES_INICIALES, siguienteObjetivo: null, vista: "captura" });
+    set({ contexto: ctx, edicion: null, captura: null, analisis: null, ultimoEnvio: null, senalesLocales: SENALES_INICIALES, siguienteObjetivo: null, ocrRuteo: null, ocrRuteoEnCurso: false, vista: "captura" });
   },
 
   nuevaCaptura: () => {
-    set({ edicion: null, captura: null, analisis: null, ultimoEnvio: null, senalesLocales: SENALES_INICIALES, vista: "captura" });
+    set({ edicion: null, captura: null, analisis: null, ultimoEnvio: null, senalesLocales: SENALES_INICIALES, ocrRuteo: null, ocrRuteoEnCurso: false, vista: "captura" });
   },
 
   /**
@@ -734,6 +744,11 @@ export const useDigitalizador = create<DigitalizadorState>((set, get) => ({
     void get().extraerSenalesLocales(c.imagenDataUrl);
   },
 
+  // [FASE-5] Sugerencia de ruteo por OCR de zonas (solo impresos).
+  setOcrRuteo: (r, enCurso = false) => {
+    set({ ocrRuteo: r, ocrRuteoEnCurso: enCurso });
+  },
+
   /**
    * [C-17] PLAN TAREA 1+2 — EXTRACCIÓN DETERMINISTA EN SEGUNDO PLANO
    * sobre la captura PROCESADA (recorte + B/N): QR (jsQR, ms) + OCR
@@ -901,6 +916,9 @@ export const useDigitalizador = create<DigitalizadorState>((set, get) => ({
       envioAdvertencia: opts.advertencia ?? false,
       mesaId: opts.mesaId ?? contexto?.mesaId ?? null,
       analisis: opts.analisis ?? analisis ?? null,
+      // [FASE-5] Sugerencia de ruteo del dispositivo (HINT: el
+      // servidor valida contra el catálogo — Invariante del flujo)
+      ocrRuteo: get().ocrRuteo ?? null,
     };
 
     // [C-17] GUARD ANTI-CRUCES (TAREA 4.3): barcode declara página,
@@ -1090,6 +1108,7 @@ export const useDigitalizador = create<DigitalizadorState>((set, get) => ({
         hasTransmissionCode: senalesLocales.identificada || senalesLocales.codigoX != null,
         crossValidationMatched: senalesLocales.identificada,
         imagenDataUrl: captura.imagenDataUrl,
+        ocrRuteo: payload.ocrRuteo ?? null,
         mesaIdRef: payload.mesaId,
         modoManual: payload.modoManual,
         envioAdvertencia: payload.envioAdvertencia,
