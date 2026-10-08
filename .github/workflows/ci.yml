@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  calidad:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Instalar deps
+        run: bun install --frozen-lockfile
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Typecheck (tsc --noEmit)
+        run: bunx tsc --noEmit
+
+      - name: Contract test
+        run: bun run test:contrato
+
+      - name: Build (export estática + SW versionado)
+        run: bun run build
+        env:
+          NEXT_PUBLIC_BASE_PATH: /digielect-digitalizador
+
+      - name: Golden tests del motor (Playwright)
+        run: |
+          bunx playwright install --with-deps chromium
+          bunx serve -l 4173 out --no-clipboard > /dev/null 2>&1 &
+          sleep 3
+          GOLDEN_BASE_URL=http://localhost:4173/digielect-digitalizador \
+            bunx playwright test tests/motor.spec.mjs --reporter=line
