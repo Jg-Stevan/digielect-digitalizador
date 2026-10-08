@@ -16,6 +16,7 @@ db/*.db-journal
 # Artefactos de build y caché de Next.js
 .next/
 out/
+site/
 *.tsbuildinfo
 
 # Logs y artefactos de sesión (worklog oficial: docs/worklog/)

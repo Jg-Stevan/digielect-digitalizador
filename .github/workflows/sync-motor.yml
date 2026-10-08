@@ -1,0 +1,73 @@
+name: Sync motor (web-scanner)
+
+# [FASE-9 · plan §11.4] Sincroniza el motor de visión con SHA fijado y
+# abre PR con el INFORME DE NOVEDADES. El humano aprueba.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "SHA de web-scanner a fijar (vacío = último de main)"
+        required: false
+        default: ""
+  schedule:
+    - cron: "0 6 * * 1" # lunes 06:00 UTC
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Instalar deps
+        run: bun install --frozen-lockfile
+
+      - name: sync:scanner (fijando SHA si vino)
+        id: sync
+        run: |
+          ARGS=""
+          if [ -n "${{ github.event.inputs.ref }}" ]; then ARGS="--ref ${{ github.event.inputs.ref }}"; fi
+          node scripts/sync-scanner.mjs $ARGS | tee /tmp/informe-motor.txt
+          echo "sha=$(cat motor.ref)" >> "$GITHUB_OUTPUT"
+
+      - name: ¿Hay cambios?
+        id: cambios
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git status --porcelain | grep -q .; then
+            echo "hay=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "hay=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rama + commit
+        if: steps.cambios.outputs.hay == '1'
+        run: |
+          BR="sync/motor-${{ steps.sync.outputs.sha }}"
+          git checkout -b "$BR"
+          git add -A
+          git commit -m "chore(motor): sync web-scanner@${{ steps.sync.outputs.sha }} (auto)"
+          git push origin "$BR"
+
+      - name: Abrir PR con el informe de novedades
+        if: steps.cambios.outputs.hay == '1'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const informe = fs.readFileSync('/tmp/informe-motor.txt', 'utf8');
+            await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `sync: motor web-scanner@${{ steps.sync.outputs.sha }}`,
+              head: `sync/motor-${{ steps.sync.outputs.sha }}`,
+              base: 'main',
+              body: `## Sincronización del motor de visión (automática)\n\n\`\`\`\n${informe}\n\`\`\`\n\n> Revisar el INFORME DE NOVEDADES y las ACCIONES SUGERIDAS antes de aprobar. El SHA queda fijado en \`motor.ref\`.`,
+            });

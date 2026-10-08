@@ -1,0 +1,43 @@
+{
+  "comentario": "Golden tests del motor de visión (Fase 9 · plan §11.2). Quads medidos en navegador real (Chromium) con el worker actual web-scanner@c225fbea sobre las actas de referencia de public/actas. NOTA: estas actas son SCANS sin fondo — el motor detecta una banda interna (comportamiento conocido del upstream sobre scans); con FOTOS reales (acta sobre superficie con fondo) detecta la página completa. El golden test fija la ESTABILIDAD del motor (regresiones), no la corrección del upstream.",
+  "motor": "c225fbea91ebf76bea12fe4ad355f578b4bff3d5",
+  "tolerancia": 0.01,
+  "casos": [
+    {
+      "imagen": "E14_XXX_X_88_335_005_02_000_X_XXX-1.jpg",
+      "esperado": {
+        "quad": [0.033, 0.547, 0.924, 0.541, 0.943, 0.689, 0.038, 0.689],
+        "etiqueta": "banda interna (scan sin fondo)"
+      },
+      "ocr_ruteo": {
+        "departamento": "88",
+        "municipio": "335",
+        "zona": "05",
+        "puesto": "02",
+        "mesa": "001",
+        "mesaIdSugerido": "mesa-el-cairo-001"
+      }
+    },
+    {
+      "imagen": "E14_XXX_X_88_495_010_02_000_X_XXX-1.jpg",
+      "esperado": {
+        "quad": null,
+        "etiqueta": "sin quad esperado en scan (validar con foto real)",
+        "ocr_ruteo": {
+          "departamento": "88",
+          "municipio": "495",
+          "zona": "10",
+          "puesto": "02",
+          "mesa": "001",
+          "mesaIdSugerido": "mesa-roma-001"
+        }
+      }
+    }
+  ],
+  "invariantes": {
+    "manual_no_encoge": {
+      "descripcion": "warp(manual:true) ≥ warp(manual:false) con el mismo quad (Invariante 3)",
+      "medido": { "manual": "1622x806", "auto": "1605x788" }
+    }
+  }
+}

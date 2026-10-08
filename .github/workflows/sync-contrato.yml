@@ -1,0 +1,67 @@
+name: Sync contrato (digielect)
+
+# [FASE-9 · plan §11.4] Sincroniza el contrato de datos desde digielect
+# (upstream) y abre PR con el informe de cambios. El humano aprueba.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * *" # diario 06:00 UTC
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Instalar deps
+        run: bun install --frozen-lockfile
+
+      - name: sync:contrato desde digielect@main
+        id: sync
+        run: |
+          node scripts/sync-contrato.mjs --ref main | tee /tmp/informe-contrato.txt || true
+          if [ ! -s /tmp/informe-contrato.txt ]; then echo "(sin salida)" > /tmp/informe-contrato.txt; fi
+
+      - name: ¿Hay cambios?
+        id: cambios
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git status --porcelain | grep -q .; then
+            echo "hay=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "hay=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rama + commit
+        if: steps.cambios.outputs.hay == '1'
+        run: |
+          BR="sync/contrato-$(date +%Y%m%d-%H%M)"
+          echo "BR=$BR" >> "$GITHUB_ENV"
+          git checkout -b "$BR"
+          git add -A
+          git commit -m "chore(contrato): sync desde digielect@main (auto)"
+          git push origin "$BR"
+
+      - name: Abrir PR con el informe
+        if: steps.cambios.outputs.hay == '1'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const informe = fs.readFileSync('/tmp/informe-contrato.txt', 'utf8');
+            await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `sync: contrato desde digielect@main`,
+              head: process.env.BR,
+              base: 'main',
+              body: `## Sincronización del contrato (automática)\n\n\`\`\`\n${informe}\n\`\`\`\n\n> El contrato es SOURCE OF TRUTH en digielect. Revisar breaking changes (versión MAYOR) antes de aprobar.`,
+            });
