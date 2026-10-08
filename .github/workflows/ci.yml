@@ -34,7 +34,11 @@ jobs:
       - name: Golden tests del motor (Playwright)
         run: |
           bunx playwright install --with-deps chromium
-          bunx serve -l 4173 out --no-clipboard > /dev/null 2>&1 &
+          # Emula el layout de GitHub Pages: el sitio del proyecto se monta
+          # bajo /digielect-digitalizador/ y el export sale plano.
+          mkdir -p site/digielect-digitalizador
+          cp -r out/* site/digielect-digitalizador/
+          bunx serve -l 4173 site --no-clipboard > /dev/null 2>&1 &
           sleep 3
           GOLDEN_BASE_URL=http://localhost:4173/digielect-digitalizador \
             bunx playwright test tests/motor.spec.mjs --reporter=line
