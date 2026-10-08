@@ -1,0 +1,25 @@
+# Dependencias
+node_modules/
+
+# Skills de plataforma (sandbox)
+skills/
+
+# Entorno y secretos — AGENTS.md §5: nunca commitear credenciales
+.env
+.env.local
+.env*.local
+
+# Base de datos local (regenerable: bun run db:push && bun run db:seed)
+db/*.db
+db/*.db-journal
+
+# Artefactos de build y caché de Next.js
+.next/
+out/
+*.tsbuildinfo
+
+# Logs y artefactos de sesión (worklog oficial: docs/worklog/)
+dev.log
+*.log
+tool-results/
+upload/
