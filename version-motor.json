@@ -1,0 +1,136 @@
+{
+  "sha": "c225fbea91ebf76bea12fe4ad355f578b4bff3d5",
+  "fecha": "2026-10-08T16:24:19.442Z",
+  "repo": "Jg-Stevan/web-scanner",
+  "archivos": [
+    {
+      "ruta": "public/scanner/detection-worker.js",
+      "sha256": "67df1834e8165caa11494dbec936bf5e196a3ba42cd15fa88e537aeb7adc497d",
+      "bytes": 67436
+    },
+    {
+      "ruta": "public/vendor/opencv-4.5.5-core.js",
+      "sha256": "2fb4015ac916ed8d767f96c4ffa11a9361841039cdd0cace40fb8d67708ac6d5",
+      "bytes": 8595933
+    },
+    {
+      "ruta": "public/vendor/opencv-4.5.5.js",
+      "sha256": "a8f0b4d6eb1250b24f17b8976d7e838963ef4ddeccb500bc7de61cc979df343c",
+      "bytes": 2578
+    },
+    {
+      "ruta": "src/lib/scanner-core/detector-client.ts",
+      "sha256": "923c0a7a77e3139a2561671529236d6e59a51128d91d38d8787272aee8e57397",
+      "bytes": 17223
+    },
+    {
+      "ruta": "src/lib/scanner-core/device-capability.ts",
+      "sha256": "832a5a25bbad3b08992b32eb1c18eb7d2b7ed57b9f8b1c9ecbae85da22b041ce",
+      "bytes": 7538
+    },
+    {
+      "ruta": "src/lib/scanner-core/format.ts",
+      "sha256": "6c17a068abef3232f11080dde9f9f554ea637be3c790e3831723a2114b598e83",
+      "bytes": 1886
+    },
+    {
+      "ruta": "src/lib/scanner-core/frame-loop.ts",
+      "sha256": "19d11431882c9e60f3860f7c66b37ab84b89b95cef06228ee161b74081abce94",
+      "bytes": 20817
+    },
+    {
+      "ruta": "src/lib/scanner-core/image-modes.ts",
+      "sha256": "d0771247d9bb91677b2bca318c8f94b1e47a99f14313e2e274f52ff258f7bd94",
+      "bytes": 31204
+    },
+    {
+      "ruta": "src/lib/scanner-core/image-processor.ts",
+      "sha256": "bde4584353b362b03c1778e8129d5b264ff960ddc4b6e311e1007644a3be3922",
+      "bytes": 41314
+    },
+    {
+      "ruta": "src/lib/scanner-core/mock-data.ts",
+      "sha256": "f28d2f77b5320548456b95359d450aaac477b74faeded78ac4457da00b7fc1db",
+      "bytes": 6949
+    },
+    {
+      "ruta": "src/lib/scanner-core/motion-stabilizer.ts",
+      "sha256": "e0742263710303d20adbb6a24b2ed2811dea0a01185bd283427156aaa0295d47",
+      "bytes": 2155
+    },
+    {
+      "ruta": "src/lib/scanner-core/ocr.ts",
+      "sha256": "35a3a05fa0af92c7aa9c31cb707b69d4207542dab4415bd894aec648ac45d493",
+      "bytes": 9452
+    },
+    {
+      "ruta": "src/lib/scanner-core/page-store.ts",
+      "sha256": "afa8d8d9e154bf2f7ff2584fcc5714d8733471b38fedd56475858033a9540a12",
+      "bytes": 11907
+    },
+    {
+      "ruta": "src/lib/scanner-core/pdf-export.ts",
+      "sha256": "41b539851997778596d30f013b40b7952c3f2bb1a0d3791fd50b2c2b4589abce",
+      "bytes": 20642
+    },
+    {
+      "ruta": "src/lib/scanner-core/pwa.ts",
+      "sha256": "4312913a1849b783b16a6b64ed8dd23ee5668063b0c19a2cb4b20fe453c9b93b",
+      "bytes": 4227
+    },
+    {
+      "ruta": "src/lib/scanner-core/quality.ts",
+      "sha256": "256b935d7c38f617a81921dbd72608087acfdac012fd9e7131e2f846de8cd77e",
+      "bytes": 10239
+    },
+    {
+      "ruta": "src/lib/scanner-core/sensor-profiler.ts",
+      "sha256": "7478b0ea2e326f1a2744f0c2b953af2c89b09dda8b2148f70e8e7f99edd74f0e",
+      "bytes": 9110
+    },
+    {
+      "ruta": "src/lib/scanner-core/store.ts",
+      "sha256": "33fa3f978dc5f979caccb7b45d36bdea386d80a5bb72438f68927a2478b6b708",
+      "bytes": 27651
+    },
+    {
+      "ruta": "src/lib/scanner-core/tags.ts",
+      "sha256": "418360adee1f0d2815d660bf35a961264d9773a6c32a1666d33eae5dc024bf34",
+      "bytes": 4385
+    },
+    {
+      "ruta": "src/lib/scanner-core/text-export.ts",
+      "sha256": "c7fc57555846db58058c81bf3c76398dca0be6fe7d90c851f90f2293b539c027",
+      "bytes": 2853
+    },
+    {
+      "ruta": "src/lib/scanner-core/types.ts",
+      "sha256": "7295558af879118ab487f42599207a72a417e45b98306fa85fa9f526b9904292",
+      "bytes": 8248
+    }
+  ],
+  "capacidades": {
+    "ops": [
+      "config",
+      "detect",
+      "enhance",
+      "warp"
+    ],
+    "modos": [
+      "bw",
+      "gray",
+      "natural",
+      "raw",
+      "text"
+    ],
+    "salidas": [
+      "boot",
+      "busy",
+      "enhanced",
+      "error",
+      "ready",
+      "result",
+      "warped"
+    ]
+  }
+}
