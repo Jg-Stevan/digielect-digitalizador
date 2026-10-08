@@ -2,33 +2,25 @@
 
 // ============================================================
 // DIGITALIZADOR E-14 — Cliente del motor de escáner (rol A)
-// Puente con el worker /e14/deteccion-worker.js (detección de
-// cuadrilátero + warp + filtros). Singleton auto-reparable,
-// 1 mensaje en vuelo, backpressure por descarte, y fallback
-// canvas si el worker muere (degrada en silencio).
+// [FASE-4] Puente con el worker NUEVO de web-scanner vía
+// ScannerAdapter (detección + warp + realce). Fallback canvas
+// si el worker muere (degrada en silencio).
 // ============================================================
 
-// [COORD C-16] basePath del despliegue (GitHub Pages sirve en /digielect)
-import { withBasePath } from "@/lib/env";
+// [FASE-1] Tipos canónicos centralizados en el contrato (source of truth).
+// La API pública de este archivo es INVARIANTE: mismas firmas y símbolos.
+import type {
+  Punto,
+  Quad,
+  FiltroPagina,
+  CalidadWarp,
+  ResultadoProceso,
+} from "@/lib/contrato/types";
 
-export type Punto = { x: number; y: number };
-/** Quad normalizado 0-1, orden FIJO: TL, TR, BR, BL */
-export type Quad = [Punto, Punto, Punto, Punto];
-export type FiltroPagina = "original" | "texto" | "bw";
+export type { Punto, Quad, FiltroPagina, CalidadWarp, ResultadoProceso };
 
-export interface CalidadWarp {
-  nitidez: number;
-  contraste: number;
-  brillo: number;
-}
-
-export interface ResultadoProceso {
-  dataUrl: string;
-  w: number;
-  h: number;
-  calidad: CalidadWarp;
-  fullFrame: boolean;
-}
+// [FASE-4] Puente con el motor web-scanner (protocolo real del worker).
+import { scannerAdapter } from "@/lib/scanner-adapter";
 
 export interface NivelCalidad {
   nivel: "excellent" | "good" | "fair" | "poor";
@@ -83,97 +75,19 @@ export function siguienteId(prefijo: string): string {
 }
 
 // ------------------------------------------------------------
-// Cliente del worker (singleton self-healing, 1 en vuelo)
+// [FASE-4] Cliente del worker → ScannerAdapter (motor web-scanner)
 // ------------------------------------------------------------
 
-interface Pendiente {
-  resolve: (v: unknown) => void;
-  reject: (e: Error) => void;
+/** Mapea el filtro del contrato al modo del worker nuevo. */
+function mapFilter(f: FiltroPagina): "raw" | "text" | "bw" {
+  return f === "texto" ? "text" : f === "bw" ? "bw" : "raw";
 }
 
-class ClienteWorker {
-  private worker: Worker | null = null;
-  private pendientes = new Map<number, Pendiente>();
-  private seq = 0;
-  private muerto = false;
-
-  asegurar(): Worker | null {
-    if (this.muerto) return null;
-    if (this.worker) return this.worker;
-    if (typeof Worker === "undefined") return null;
-    try {
-      // [COORD C-16] withBasePath: en Pages el worker vive en /digielect/e14/…
-      const w = new Worker(withBasePath("/e14/deteccion-worker.js") + "?v=3");
-      w.onmessage = (e: MessageEvent) => {
-        const data = e.data ?? {};
-        const p = this.pendientes.get(data.id);
-        if (!p) return;
-        this.pendientes.delete(data.id);
-        if (data.ok) p.resolve(data);
-        else p.reject(new Error(String(data.error ?? "error del worker")));
-      };
-      w.onerror = () => {
-        // worker roto: fallar pendientes y marcar muerto (fallback canvas)
-        for (const [, p] of this.pendientes) p.reject(new Error("worker caído"));
-        this.pendientes.clear();
-        this.worker = null;
-        this.muerto = true;
-      };
-      this.worker = w;
-      return w;
-    } catch {
-      this.muerto = true;
-      return null;
-    }
-  }
-
-  get disponible(): boolean {
-    return !this.muerto;
-  }
-
-  private enviar<T>(msg: Record<string, unknown>, transfer: Transferable[]): Promise<T> {
-    const w = this.asegurar();
-    if (!w) return Promise.reject(new Error("worker no disponible"));
-    return new Promise<T>((resolve, reject) => {
-      const id = ++this.seq;
-      this.pendientes.set(id, {
-        resolve: resolve as (v: unknown) => void,
-        reject,
-      });
-      try {
-        w.postMessage({ ...msg, id }, transfer);
-      } catch (e) {
-        this.pendientes.delete(id);
-        reject(e instanceof Error ? e : new Error("postMessage falló"));
-      }
-    });
-  }
-
-  detectar(buf: ArrayBuffer, w: number, h: number): Promise<{ quad: Quad | null; fullFrame: boolean }> {
-    return this.enviar({ op: "detectar", buf, w, h }, [buf]);
-  }
-
-  procesar(
-    buf: ArrayBuffer,
-    w: number,
-    h: number,
-    quadPx: Punto[] | null,
-    modo: FiltroPagina,
-    targetLongSide: number,
-    manual: boolean
-  ): Promise<{ buf: ArrayBuffer; w: number; h: number; calidad: CalidadWarp; fullFrame: boolean }> {
-    return this.enviar(
-      { op: "procesar", buf, w, h, quad: quadPx, modo, targetLongSide, manual },
-      [buf]
-    );
-  }
-}
-
-const cliente = new ClienteWorker();
-
-/** Precalienta el worker (llamar en idle al montar la app) */
+/** Precalienta el worker (llamar en idle al montar la app) + config E-14. */
 export function precalentarEscaner(): void {
-  cliente.asegurar();
+  void scannerAdapter.esperarListo().then((ok) => {
+    if (ok) void scannerAdapter.configurar({ docProfile: "pagina" });
+  });
 }
 
 // ------------------------------------------------------------
@@ -252,20 +166,20 @@ function liberarCanvas(c: HTMLCanvasElement): void {
 // ------------------------------------------------------------
 
 /** Detecta bordes del documento en una imagen (frame ≤400 px).
- *  fullFrame=true SOLO cuando el papel llena TODO el marco (no se
- *  recorta); si la detección falla se devuelve quad=null con
- *  fullFrame=false (el editor ofrece el recorte manual). */
+ *  El worker NUEVO devuelve corners en FRACCIONES 0–1 (Float32Array(8),
+ *  TL,TR,BR,BL) — el adaptador ya las convierte a Quad. fullFrame=true
+ *  cuando la detección no produce quad (papel que llena el marco). */
 export async function detectarBordes(
   originalUrl: string
 ): Promise<{ quad: Quad | null; fullFrame: boolean }> {
   try {
     const d = await decodificar(originalUrl);
-    if (cliente.disponible) {
+    if (scannerAdapter.disponible) {
       const { ctx, w, h } = lienzoDe(d, 400);
       const img = ctx.getImageData(0, 0, w, h);
       liberarCanvas(ctx.canvas);
       const buf = img.data.buffer.slice(0) as ArrayBuffer;
-      const r = await cliente.detectar(buf, w, h);
+      const r = await scannerAdapter.detectar(buf, w, h);
       return { quad: r.quad, fullFrame: r.fullFrame === true };
     }
     return { quad: null, fullFrame: true };
@@ -274,15 +188,17 @@ export async function detectarBordes(
   }
 }
 
-/** Detección sobre un frame RGBA ya capturado (frame loop de cámara) */
+/** Detección sobre un frame RGBA ya capturado (frame loop de cámara).
+ *  [FASE-4] backpressure por descarte: BusyError y errores del worker
+ *  devuelven null y el frame loop conserva el último quad válido. */
 export async function detectarFrameRgba(
   buf: ArrayBuffer,
   w: number,
   h: number
 ): Promise<Quad | null> {
-  if (!cliente.disponible) return null;
+  if (!scannerAdapter.disponible) return null;
   try {
-    const r = await cliente.detectar(buf, w, h);
+    const r = await scannerAdapter.detectar(buf, w, h);
     return r.quad;
   } catch {
     return null;
@@ -290,8 +206,13 @@ export async function detectarFrameRgba(
 }
 
 /**
- * Procesa la página: warp de perspectiva + filtro + rotación.
- * `manual` = quad puesto por el humano (sin encoger 3.5 px).
+ * Procesa la página [FASE-4 — flujo del motor nuevo]:
+ *   decodificar → warp(quad, manual) → realzar(mapFilter) →
+ *   rotación LOCAL en canvas (el worker NO rota) → dataUrl →
+ *   calidad con `evaluarCalidad` sobre el resultado (nada de métricas
+ *   inventadas — normalización existente).
+ * `manual` = quad puesto por el humano (el worker NO encoge 3.5 px —
+ * Invariante 3: código de barras y firmas dependen de esto).
  */
 export async function procesarPagina(opts: {
   originalUrl: string;
@@ -308,32 +229,38 @@ export async function procesarPagina(opts: {
   let calidad: CalidadWarp = { nitidez: 0.5, contraste: 0.5, brillo: 0.7 };
   let wOut = d.w;
   let hOut = d.h;
-  let rgba: Uint8ClampedArray | null = null;
+  let bitmapFinal: ImageBitmap | HTMLImageElement | null = null;
 
-  if (cliente.disponible) {
-    const { ctx, w, h } = lienzoDe(d);
-    const img = ctx.getImageData(0, 0, w, h);
-    liberarCanvas(ctx.canvas);
-    // copia para transferir (el buffer origen queda intacto en la caché)
-    const buf = img.data.buffer.slice(0) as ArrayBuffer;
-    const quadPx = quad
-      ? quad.map((p) => ({ x: p.x * w, y: p.y * h }))
-      : null;
-    const r = await cliente.procesar(buf, w, h, quadPx, filtro, cap, manual);
-    rgba = new Uint8ClampedArray(r.buf);
-    wOut = r.w;
-    hOut = r.h;
-    calidad = r.calidad;
-  } else {
-    // Fallback canvas: recorte por homografía + filtro local
-    const r = await procesarFallback(d, quad, filtro, cap, manual);
-    rgba = r.rgba;
-    wOut = r.w;
-    hOut = r.h;
-    calidad = r.calidad;
+  if (scannerAdapter.disponible) {
+    try {
+      // RGBA de la ORIGINAL (mismo lienzo de siempre — cap CAP_DECODE)
+      const { ctx, w, h } = lienzoDe(d);
+      const img = ctx.getImageData(0, 0, w, h);
+      liberarCanvas(ctx.canvas);
+      const buf = img.data.buffer.slice(0) as ArrayBuffer;
+      const quadEfectivo = quad ?? quadMarcoCompleto();
+      // 1) warp (manual=true NO encoge 3.5 px — llega tal cual al worker)
+      const warped = await scannerAdapter.warp(buf, w, h, quadEfectivo, manual, cap);
+      // 2) realce/filtro sobre el bitmap warpado (modo del motor nuevo)
+      const realzado = await scannerAdapter.realzar(warped.bitmap, mapFilter(filtro), cap);
+      // 3) decodificar el blob realzado para pintarlo + rotarlo LOCAL
+      bitmapFinal = await createImageBitmap(realzado.blob);
+      wOut = realzado.ancho || bitmapFinal.width;
+      hOut = realzado.alto || bitmapFinal.height;
+    } catch {
+      bitmapFinal = null; // worker caído a mitad → fallback canvas abajo
+    }
   }
 
-  // Pintar resultado + rotación
+  if (!bitmapFinal) {
+    // Fallback canvas: recorte por homografía + filtro local
+    const r = await procesarFallback(d, quad, filtro, cap, manual);
+    bitmapFinal = await bitmapDesdeRgba(r.rgba, r.w, r.h);
+    wOut = r.w;
+    hOut = r.h;
+  }
+
+  // Pintar resultado + rotación LOCAL (el worker NO rota)
   const canvas = document.createElement("canvas");
   const rot = rotacion % 360;
   const intercambia = rot === 90 || rot === 270;
@@ -341,20 +268,13 @@ export async function procesarPagina(opts: {
   canvas.height = intercambia ? wOut : hOut;
   const ctx2 = canvas.getContext("2d");
   if (!ctx2) throw new Error("Canvas 2D no disponible");
-  const tmp = document.createElement("canvas");
-  tmp.width = wOut;
-  tmp.height = hOut;
-  const tctx = tmp.getContext("2d");
-  if (!tctx) throw new Error("Canvas 2D no disponible");
-  const idata = tctx.createImageData(wOut, hOut);
-  idata.data.set(rgba);
-  tctx.putImageData(idata, 0, 0);
+  ctx2.imageSmoothingQuality = "high";
   ctx2.save();
   ctx2.translate(canvas.width / 2, canvas.height / 2);
   ctx2.rotate((rot * Math.PI) / 180);
-  ctx2.drawImage(tmp, -wOut / 2, -hOut / 2);
+  ctx2.drawImage(bitmapFinal as CanvasImageSource, -wOut / 2, -hOut / 2, wOut, hOut);
   ctx2.restore();
-  liberarCanvas(tmp);
+  bitmapFinal instanceof ImageBitmap && bitmapFinal.close();
 
   // Encode: PNG para bw/texto (texto nítido), JPEG para color
   const mime = filtro === "original" ? "image/jpeg" : "image/png";
@@ -381,7 +301,34 @@ export async function procesarPagina(opts: {
     );
   });
   liberarCanvas(canvas);
+
+  // Calidad sobre el RESULTADO con la normalización existente (0–100 → 0–1)
+  try {
+    const nivel = await evaluarCalidad(dataUrl);
+    calidad = {
+      nitidez: nivel.sharpness / 100,
+      contraste: nivel.contrast / 100,
+      brillo: nivel.brightness / 100,
+    };
+  } catch {
+    // calidad por defecto (ya inicializada)
+  }
   return { dataUrl, w: canvas.width, h: canvas.height, calidad, fullFrame: false };
+}
+
+/** RGBA crudo (fallback) → bitmap pintable sin codificar de más. */
+async function bitmapDesdeRgba(rgba: Uint8ClampedArray, w: number, h: number): Promise<ImageBitmap> {
+  const tmp = document.createElement("canvas");
+  tmp.width = w;
+  tmp.height = h;
+  const tctx = tmp.getContext("2d");
+  if (!tctx) throw new Error("Canvas 2D no disponible");
+  const idata = tctx.createImageData(w, h);
+  idata.data.set(rgba);
+  tctx.putImageData(idata, 0, 0);
+  const bmp = await createImageBitmap(tmp);
+  liberarCanvas(tmp);
+  return bmp;
 }
 
 /** Fallback en hilo principal (worker muerto): misma matemática esencial */
