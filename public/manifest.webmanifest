@@ -1,7 +1,7 @@
 {
-  "name": "Digielect Digitalizador",
-  "short_name": "Digitalizador",
-  "description": "PWA de digitalización y transmisión de actas E-14 para consulados de Colombia en el exterior.",
+  "name": "Digitalizador E-14",
+  "short_name": "Digitalizador E-14",
+  "description": "Escaneo de actas E-14 en alta calidad con extracción de datos impresos de ruteo. Offline-first.",
   "id": "./",
   "start_url": "./",
   "scope": "./",

@@ -4,6 +4,7 @@ import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
 import { withBasePath } from "@/lib/env";
 import { RegistrarSW } from "@/components/pwa/RegistrarSW";
+import { ActualizarAppBanner } from "@/components/pwa/ActualizarAppBanner";
 
 const hankenGrotesk = Hanken_Grotesk({
   variable: "--font-hanken",
@@ -75,6 +76,7 @@ export default function RootLayout({
         className={`${hankenGrotesk.variable} ${jetbrainsMono.variable} ${inter.variable} ${spaceMono.variable} antialiased bg-background text-foreground`}
       >
         {children}
+        <ActualizarAppBanner />
         <Toaster />
         {/* Service Worker mínimo — PWA real, assets y vendor de OCR
             cacheados para la jornada sin red (Fase 8 lo versiona). */}
