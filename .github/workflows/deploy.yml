@@ -1,0 +1,54 @@
+name: Deploy a GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"   # misma versión que ci.yml
+
+      - name: Instalar deps
+        run: bun install --frozen-lockfile
+
+      - name: Build (export estática + SW versionado)
+        run: bun run build
+        env:
+          NEXT_PUBLIC_BASE_PATH: /digielect-digitalizador
+          # NEXT_PUBLIC_API_BASE_URL: NO definir aún → la app arranca en modo
+          # contingencia (cola local IndexedDB), que es el comportamiento esperado.
+
+      - name: Verificar artefacto del export
+        run: |
+          test -f out/index.html || { echo "FALTA out/index.html"; exit 1; }
+          test -f out/404.html   || echo "aviso: sin 404.html (no fatal)"
+          ls -la out | head -20
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.dep.outputs.page_url }}
+    steps:
+      - id: dep
+        uses: actions/deploy-pages@v4
