@@ -11,16 +11,32 @@
 // ============================================================
 
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test, expect } from "@playwright/test";
 
+// ESM (__dirname no existe en .mjs; compatible Node y Bun)
+const __dirname = dirname(fileURLToPath(import.meta.url));
 const esperado = JSON.parse(readFileSync(join(__dirname, "golden/esperado.json"), "utf8"));
 const BASE = process.env.GOLDEN_BASE_URL ?? "http://localhost:4173/digielect-digitalizador";
 
+/** Abre la app y espera a que la navegación se asiente. La PWA recarga
+ *  UNA vez cuando el SW toma el control (clients.claim → controllerchange
+ *  → location.reload — ver RegistrarSW.tsx): ese reload destruye el
+ *  contexto de un page.evaluate en curso. */
+async function abrir(page) {
+  await page.goto(BASE + "/");
+  await page.locator("h1").first().waitFor({ state: "visible", timeout: 15_000 });
+  await page.waitForTimeout(1_500); // absorbe el reload del controllerchange
+  await page.locator("h1").first().waitFor({ state: "visible", timeout: 15_000 }).catch(() => {});
+}
+
 /** Habla el protocolo REAL del worker (Invariante 4) en la página. */
 async function motorListo(page) {
-  return page.evaluate(async (base) => {
-    const w = new Worker(`${base}/scanner/detection-worker.js?v=${esperado.motor}`);
+  // page.evaluate corre en el NAVEGADOR: todo lo que use (incluida la
+  // versión del motor) debe entrar por parámetro, no por scope de Node.
+  return page.evaluate(async ({ base, motor }) => {
+    const w = new Worker(`${base}/scanner/detection-worker.js?v=${motor}`);
     const ready = await new Promise((res, rej) => {
       const t = setTimeout(() => rej(new Error("ready timeout")), 25_000);
       w.onmessage = (e) => { if (e.data?.type === "ready") { clearTimeout(t); res(e.data); } };
@@ -28,7 +44,7 @@ async function motorListo(page) {
     });
     window.__worker = w;
     return { ok: true, opencvLocal: String(ready.opencvUrl || "").includes("vendor") };
-  }, base);
+  }, { base: BASE, motor: esperado.motor });
 }
 
 async function detect(page, archivo) {
@@ -77,7 +93,7 @@ async function warp(page, archivo, quad, manual) {
 
 test.beforeAll("worker listo con OpenCV LOCAL (Invariante 6)", async ({ browser }) => {
   const page = await browser.newPage();
-  await page.goto(BASE + "/");
+  await abrir(page);
   const estado = await motorListo(page);
   expect(estado.ok).toBe(true);
   expect(estado.opencvLocal).toBe(true);
@@ -87,7 +103,7 @@ test.beforeAll("worker listo con OpenCV LOCAL (Invariante 6)", async ({ browser 
 for (const caso of esperado.casos) {
   test(`detect ±${esperado.tolerancia}: ${caso.imagen}`, async ({ browser }) => {
     const page = await browser.newPage();
-    await page.goto(BASE + "/");
+    await abrir(page);
     await motorListo(page);
     const corners = await detect(page, caso.imagen);
     if (caso.esperado.quad == null) {
@@ -105,7 +121,7 @@ for (const caso of esperado.casos) {
 
 test("Invariante 3: manual:true NO encoge (dims ≥ auto)", async ({ browser }) => {
   const page = await browser.newPage();
-  await page.goto(BASE + "/");
+  await abrir(page);
   await motorListo(page);
   const caso = esperado.casos.find((c) => c.esperado.quad != null);
   test.skip(!caso, "sin caso con quad esperado");
