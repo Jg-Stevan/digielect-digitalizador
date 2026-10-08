@@ -53,6 +53,21 @@ import {
   type FiltroPagina,
   type Quad,
 } from "@/lib/digitalizador/escaner";
+// [FASE-5] OCR de ruteo por zonas (solo campos IMPRESOS — regla de
+// producto: los votos manuscritos no se leen ni se procesan)
+import { ZONAS_RUTEO_E14 } from "@/lib/ocr/zonas-e14";
+import { reconocerZonasRuteo } from "@/lib/ocr/motor-ocr";
+import { resolverRuteo, type ResultadoRuteo } from "@/lib/ocr/ruteo";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import type { EstadoEdicion, Rotacion } from "@/lib/digitalizador/types";
 import { useDigitalizador } from "@/lib/digitalizador/store";
 import { feedbackAnomalia } from "@/lib/digitalizador/feedback";
@@ -103,8 +118,94 @@ export default function PantallaRevision() {
   const gestionadoAuto = useRef(false);
   const compararTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const ocrRuteoEnCursoStore = useDigitalizador((s) => s.ocrRuteoEnCurso);
+  const setOcrRuteo = useDigitalizador((s) => s.setOcrRuteo);
+  /** [FASE-5] Diálogo de ruteo ilegible (antes de guardar). */
+  const [dialogoRuteo, setDialogoRuteo] = useState<{
+    label: string;
+    valor: string | null;
+    motivo: string | null;
+    alContingencia: () => void;
+  } | null>(null);
+
   /** Helper para handlers: siempre la edición vigente fuera del render */
   const edicionActual = useCallback((): EstadoEdicion | null => useDigitalizador.getState().edicion, []);
+
+  // ----------------------------------------------------------
+  // [FASE-5] OCR DE RUTEO por zonas (solo campos IMPRESOS — regla
+  // de producto: los votos manuscritos no se leen ni se procesan)
+  // sobre la preview warpada. Fire-and-forget en segundo plano — el
+  // resultado es HINT (el servidor valida). Fallo suave: sin motor →
+  // null y el flujo determinista existente manda.
+  // ----------------------------------------------------------
+  const dataUrlOcr = procesada?.dataUrl ?? null;
+  const edicionId = edicion?.id ?? null;
+  useEffect(() => {
+    if (!dataUrlOcr || !edicionId) return;
+    let cancelado = false;
+    setOcrRuteo(null, true);
+    void (async () => {
+      try {
+        const campos = await reconocerZonasRuteo(dataUrlOcr, ZONAS_RUTEO_E14);
+        if (cancelado) return;
+        const rr: ResultadoRuteo = resolverRuteo(
+          campos,
+          useDigitalizador.getState().consulados
+        );
+        if (cancelado) return;
+        setOcrRuteo(
+          {
+            mesaIdSugerido: rr.mesaIdSugerido,
+            confianzaGlobal: rr.confianzaGlobal,
+            campos: rr.campos,
+          },
+          false
+        );
+      } catch {
+        if (!cancelado) setOcrRuteo(null, false);
+      }
+    })();
+    return () => {
+      cancelado = true;
+    };
+  }, [dataUrlOcr, edicionId, setOcrRuteo]);
+
+  /**
+   * [FASE-5] PUERTA DE RUTEO antes de guardar (plan §7.5):
+   *  · todos los campos ≥ confMinima y match exacto → pasar
+   *  · campo ilegible / sin match → diálogo específico con opción
+   *    de contingencia — NUNCA se guarda en ruta normal con campos
+   *    clave ilegibles.
+   * Sin resultado OCR (motor ausente) → pasar (fallo suave).
+   * Devuelve true si el flujo puede continuar guardando.
+   */
+  const evaluarPuertaRuteo = useCallback(
+    (alContingencia: () => void): boolean => {
+      const r = useDigitalizador.getState().ocrRuteo;
+      if (!r) return true; // sin OCR disponible — no bloquear (fallo suave)
+      const rr = resolverRuteo(
+        {
+          departamento: r.campos.departamento,
+          municipio: r.campos.municipio,
+          zona: r.campos.zona,
+          puesto: r.campos.puesto,
+          mesa: r.campos.mesa,
+        },
+        useDigitalizador.getState().consulados
+      );
+      if (rr.mesaIdSugerido && !rr.campoFallido) return true;
+      const zona = ZONAS_RUTEO_E14.find((z) => z.id === rr.campoFallido);
+      setDialogoRuteo({
+        label: zona?.label ?? "RUTEO",
+        valor: rr.campoFallido ? (r.campos[rr.campoFallido]?.valor ?? null) : null,
+        motivo: rr.motivo,
+        alContingencia,
+      });
+      feedbackAnomalia();
+      return false;
+    },
+    []
+  );
 
   // ----------------------------------------------------------
   // Badge de calidad de la foto ORIGINAL (una vez por página)
@@ -386,6 +487,9 @@ export default function PantallaRevision() {
     if (reconocimientoListo) return;
     if (!procesada || procesandoPreview) return;
     if (senalesLocales.extraccionEnCurso) return;
+    // [FASE-5] la puerta de ruteo necesita el OCR de zonas listo
+    // antes de revelar la revisión (presupuesto propio ≤5 s)
+    if (ocrRuteoEnCursoStore) return;
     if (analizando && !esperaMaxVencida) return;
     setReconocimientoListo(true);
   }, [
@@ -393,6 +497,7 @@ export default function PantallaRevision() {
     procesada,
     procesandoPreview,
     senalesLocales.extraccionEnCurso,
+    ocrRuteoEnCursoStore,
     analizando,
     esperaMaxVencida,
   ]);
@@ -467,6 +572,15 @@ export default function PantallaRevision() {
             irA("contingencia");
             return;
           }
+          // [FASE-5] Puerta de ruteo: campos impresos ilegibles →
+          // diálogo (retomar o contingencia), NO auto-envío.
+          if (
+            !evaluarPuertaRuteo(() => {
+              irA("contingencia");
+            })
+          ) {
+            return;
+          }
           // [RN-02 · FLUJO DIRECTO] Score óptimo + código leído → envío
           // automático con la mesa resuelta localmente (ranura dirigida
           // o ubicación determinista del código). Sin contingencia.
@@ -497,6 +611,7 @@ export default function PantallaRevision() {
     edicion?.autoQuadPendiente, procesandoPreview, procesada, enviando,
     barcodeBruto, parseado, senalesLocales, senalDeterminista, contexto,
     enviarActa, irA, prepararYFinalizar, crucePuesto, resolverMesaLocal,
+    evaluarPuertaRuteo,
   ]);
 
   const enviarConAdvertencia = () => {
@@ -1098,6 +1213,14 @@ export default function PantallaRevision() {
                       if (ctaConfirmar) {
                         void (async () => {
                           await prepararYFinalizar();
+                          // [FASE-5] Puerta de ruteo antes de guardar
+                          if (
+                            !evaluarPuertaRuteo(() => {
+                              irA("contingencia");
+                            })
+                          ) {
+                            return;
+                          }
                           await enviarActa({
                             barcode15: parseado.ok ? barcodeBruto : null,
                             mesaId: resolverMesaLocal(),
@@ -1239,6 +1362,59 @@ export default function PantallaRevision() {
           fase={faseReconocimiento}
         />
       )}
+
+      {/* ===== [FASE-5] Diálogo de ruteo ilegible (antes de guardar) ===== */}
+      <AlertDialog
+        open={dialogoRuteo !== null}
+        onOpenChange={(abierto) => {
+          if (!abierto) setDialogoRuteo(null);
+        }}
+      >
+        <AlertDialogContent className="max-w-sm border-amber-500/40 bg-zinc-950">
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2 text-left font-mono text-sm uppercase tracking-widest text-amber-400">
+              <AlertTriangle className="h-4 w-4" />
+              No se pudo leer {dialogoRuteo?.label ?? "el ruteo"}
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-left text-[13px] leading-relaxed text-zinc-300">
+              {dialogoRuteo?.valor
+                ? `Se leyó «${dialogoRuteo.valor}» pero no es confiable.`
+                : "El campo no se pudo leer."}{" "}
+              Vuelva a tomar la foto o ajuste el recorte para que el encabezado
+              impreso quede completo y nítido.
+              {dialogoRuteo?.motivo ? (
+                <span className="mt-1 block text-[11px] text-zinc-500">
+                  {dialogoRuteo.motivo}
+                </span>
+              ) : null}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter className="flex-col gap-2 sm:flex-col">
+            <AlertDialogAction
+              className="h-11 w-full rounded-xl bg-accent text-[12px] font-extrabold uppercase tracking-wider text-white"
+              onClick={() => {
+                setDialogoRuteo(null);
+                nuevaCaptura();
+              }}
+            >
+              VOLVER A TOMAR LA FOTO
+            </AlertDialogAction>
+            <AlertDialogCancel
+              className="mt-0 h-11 w-full rounded-xl border-amber-500/40 bg-amber-500/10 text-[12px] font-extrabold uppercase tracking-wider text-amber-300 hover:bg-amber-500/20"
+              onClick={() => {
+                const d = dialogoRuteo;
+                setDialogoRuteo(null);
+                // [FASE-5] Guardar en CONTINGENCIA (origen contingencia
+                // para el supervisor — asignación manual con imagen
+                // preservada)
+                d?.alContingencia();
+              }}
+            >
+              GUARDAR EN CONTINGENCIA
+            </AlertDialogCancel>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   );
 }

@@ -20,7 +20,7 @@ import type {
 export type { Punto, Quad, FiltroPagina, CalidadWarp, ResultadoProceso };
 
 // [FASE-4] Puente con el motor web-scanner (protocolo real del worker).
-import { scannerAdapter } from "@/lib/scanner-adapter";
+import { scannerAdapter, BusyError } from "@/lib/scanner-adapter";
 
 export interface NivelCalidad {
   nivel: "excellent" | "good" | "fair" | "poor";
@@ -237,12 +237,24 @@ export async function procesarPagina(opts: {
       const { ctx, w, h } = lienzoDe(d);
       const img = ctx.getImageData(0, 0, w, h);
       liberarCanvas(ctx.canvas);
-      const buf = img.data.buffer.slice(0) as ArrayBuffer;
+      // 1) warp (manual=true NO encoge 3.5 px — llega tal cual al worker).
+      //    BusyError = el worker estaba ocupado (p.ej. el detect del
+      //    auto-recorte en vuelo): descartar y REINTENTAR con backoff —
+      //    no degradar al fallback canvas por una colisión transitoria.
       const quadEfectivo = quad ?? quadMarcoCompleto();
-      // 1) warp (manual=true NO encoge 3.5 px — llega tal cual al worker)
-      const warped = await scannerAdapter.warp(buf, w, h, quadEfectivo, manual, cap);
+      let warped: Awaited<ReturnType<typeof scannerAdapter.warp>> | null = null;
+      for (let intento = 0; intento < 5 && !warped; intento++) {
+        const buf = img.data.buffer.slice(0) as ArrayBuffer;
+        try {
+          warped = await scannerAdapter.warp(buf, w, h, quadEfectivo, manual, cap);
+        } catch (e) {
+          if (!(e instanceof BusyError)) throw e;
+          if (intento === 4) throw e;
+          await new Promise((res) => setTimeout(res, 250 * (intento + 1)));
+        }
+      }
       // 2) realce/filtro sobre el bitmap warpado (modo del motor nuevo)
-      const realzado = await scannerAdapter.realzar(warped.bitmap, mapFilter(filtro), cap);
+      const realzado = await scannerAdapter.realzar(warped!.bitmap, mapFilter(filtro), cap);
       // 3) decodificar el blob realzado para pintarlo + rotarlo LOCAL
       bitmapFinal = await createImageBitmap(realzado.blob);
       wOut = realzado.ancho || bitmapFinal.width;
@@ -341,7 +353,8 @@ async function procesarFallback(
 ): Promise<{ rgba: Uint8ClampedArray; w: number; h: number; calidad: CalidadWarp }> {
   const { ctx, w, h } = lienzoDe(d, cap);
   const img = ctx.getImageData(0, 0, w, h);
-  liberarCanvas(ctx.canvas);
+  // [FIX FASE-5] el canvas fuente NO se libera aquí: el recorte del quad
+  // lo dibuja ABAJO con drawImage. Se libera al final de la rama.
   let rgba = img.data;
 
   // Sin homografía en el fallback: recorte bbox del quad
@@ -368,6 +381,7 @@ async function procesarFallback(
     return { rgba, w: cw, h: ch, calidad: metricasDe(rgba, cw, ch) };
   }
   const out = filtroLocal(rgba, w, h, filtro);
+  liberarCanvas(ctx.canvas);
   return { rgba: out, w, h, calidad: metricasDe(out, w, h) };
 }
 

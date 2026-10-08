@@ -86,6 +86,9 @@ export interface ActaQueueItem {
   // [C-17] Extras del contrato digielect (aditivos al §3.2 del plan)
   /** Id de mesa del monitor para el puente de envío a /api/actas */
   mesaIdRef?: string | null;
+  /** [FASE-5] Sugerencia de ruteo por OCR de zonas (hint del
+   * dispositivo; el servidor valida contra el catálogo). */
+  ocrRuteo?: import("@/lib/contrato/types").OcrRuteo | null;
   modoManual?: boolean;
   envioAdvertencia?: boolean;
   /** [OLA4 4.1] Id del acta previa que este ítem reemplaza al subir

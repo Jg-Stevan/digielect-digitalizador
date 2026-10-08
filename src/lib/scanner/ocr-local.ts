@@ -7,28 +7,26 @@
 //   · encabezadoCrudo — grupos de dígitos DIVIPOL de una misma
 //     línea, en orden de aparición (crudo, sin normalizar)
 //
-// Motor: Tesseract.js (spa+eng) VENDORIZADO (D-23, canon):
-//   · los binarios viven en /public/vendor/tesseract/** y el
-//     Service Worker los cachea → el OCR funciona SIN RED
-//     (contingencia de jornada).
-//   · si el vendor no está en el despliegue, cae al CDN público
-//     (degradación suave, como antes).
+// Motor: Tesseract.js (spa) VENDORIZADO (D-23, canon):
+//   · los binarios viven en /public/ocr/** y el Service Worker los
+//     cachea → el OCR funciona SIN RED (contingencia de jornada).
+//   · [FASE-5 · Invariante 6] CERO CDNs: si el vendor no está en el
+//     despliegue, el OCR local falla suave (señales parciales) — NO
+//     hay fallback a CDN (rompería el offline estricto en silencio).
 //   · WORKER SINGLETON [OLA7 · M-11 AN-3]: UN worker por pestaña
 //     (crear + cargar spa+eng en cada captura era carísimo),
 //     recognize SERIALIZADO por cola, reset si se cuelga (timeout)
 //     y cierre por inactividad (RAM en gamas bajas).
 //   · CORRE EN SEGUNDO PLANO: la revisión nunca lo espera
 //     (píldora "LEYENDO TEXTO…" en la UI).
-//   · FALLA SUAVE: sin red y sin vendor → null y las señales
-//     quedan parciales; el flujo continúa.
+//   · FALLA SUAVE: sin vendor → null y las señales quedan
+//     parciales; el flujo continúa.
 // ============================================================
 
 import { withBasePath } from "@/lib/env";
 
-const VENDOR = "/vendor/tesseract";
-const TESS_CDN = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist";
-const TESS_CORE_CDN = "https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1";
-const TESS_LANG_CDN = "https://tessdata.projectnaptha.com/4.0.0";
+const TESS = "/ocr/tesseract";
+const TESSDATA = "/ocr/tessdata";
 const LADO_OCR = 1600;
 const TIMEOUT_MS = 30_000;
 
@@ -41,19 +39,12 @@ interface RutasMotor {
 
 function rutasLocales(): RutasMotor {
   return {
-    script: withBasePath(`${VENDOR}/tesseract.min.js`),
-    worker: withBasePath(`${VENDOR}/worker.min.js`),
-    core: withBasePath(`${VENDOR}/core`),
-    lang: withBasePath(`${VENDOR}/lang`),
+    script: withBasePath(`${TESS}/tesseract.min.js`),
+    worker: withBasePath(`${TESS}/worker.min.js`),
+    core: withBasePath(`${TESS}/core`),
+    lang: withBasePath(TESSDATA),
   };
 }
-
-const rutasCdn: RutasMotor = {
-  script: `${TESS_CDN}/tesseract.min.js`,
-  worker: `${TESS_CDN}/worker.min.js`,
-  core: TESS_CORE_CDN,
-  lang: TESS_LANG_CDN,
-};
 
 interface TesseractLike {
   createWorker: (
@@ -70,9 +61,9 @@ let tessProm: Promise<{ Tesseract: TesseractLike; rutas: RutasMotor } | null> | 
 
 /**
  * Carga perezosa del UMD de Tesseract (una sola vez).
- * D-23: LOCAL primero (el vendor vive en el dispositivo y el SW lo
- * cachea — el OCR funciona sin red); CDN sólo como respaldo si el
- * vendor no existe en este despliegue.
+ * [FASE-5 · Invariante 6] LOCAL ÚNICAMENTE: el vendor vive en el
+ * dispositivo y el SW lo cachea — sin fallback a CDN (el offline
+ * estricto NO se rompe en silencio). Si falta → null (fallo suave).
  */
 async function cargarTesseract(): Promise<{
   Tesseract: TesseractLike;
@@ -80,7 +71,6 @@ async function cargarTesseract(): Promise<{
 } | null> {
   if (tessProm) return tessProm;
   tessProm = (async () => {
-    const w = window as unknown as { Tesseract?: TesseractLike };
     try {
       const head = await fetch(rutasLocales().script, { method: "HEAD" });
       if (head.ok) {
@@ -89,10 +79,9 @@ async function cargarTesseract(): Promise<{
         if (T) return { Tesseract: T, rutas };
       }
     } catch {
-      /* vendor ausente → CDN */
+      /* vendor ausente → sin OCR local (fallo suave) */
     }
-    const T = await inyectarScript(rutasCdn.script);
-    return T ? { Tesseract: T, rutas: rutasCdn } : null;
+    return null;
   })();
   return tessProm;
 }
@@ -273,7 +262,9 @@ async function obtenerWorker(): Promise<WorkerOcr | null> {
     const { Tesseract, rutas } = motor;
     // D-23: worker/core/lang apuntan SIEMPRE al mismo origen que el
     // UMD cargado (local si hay vendor, CDN si es respaldo).
-    const creacion = Tesseract.createWorker(["spa", "eng"], 1, {
+    // [FASE-5] SOLO spa: el repo sirve únicamente spa.traineddata.gz
+    // (plan §8.1 — pedir eng colgaría el worker para siempre).
+    const creacion = Tesseract.createWorker(["spa"], 1, {
       workerPath: rutas.worker,
       corePath: rutas.core,
       langPath: rutas.lang,
