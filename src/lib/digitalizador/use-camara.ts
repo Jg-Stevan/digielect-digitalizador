@@ -1,35 +1,62 @@
 "use client";
 
 // ============================================================
-// DIGITALIZADOR E-14 — Cámara v2 (puerto fiel del mecanismo de
-// web-scanner v6.2 que ya funcionó en teléfonos reales):
+// DIGITALIZADOR E-14 — Cámara v6.3 (port fiel del mecanismo de
+// web-scanner v6.3, probado en producción):
+//   · DUAL PIPELINE: la captura MANDA con takePhoto() a resolución
+//     del sensor (12–48 MP, independiente del preview de 540p);
+//     si cuelga (>8 s), no existe o FileReader falla → burst de
+//     respaldo [zsl, snapA, snapB], ganador por nitidez y encode
+//     SOLO del ganador (F-RES-PRIORITY: un frame de preview NUNCA
+//     sustituye una foto full-sensor).
+//   · F-SENSOR-PROFILER: perfil del sensor de FOTO 1 vez por
+//     apertura (getPhotoCapabilities) → photoSettings con tope
+//     (capa 1, el ISP escala EN la captura) + clampBlobToSafeCap
+//     post-decode (capa 2, red de seguridad).
+//   · F-STAB: compuerta de quietud inercial (DeviceMotion, 280 ms)
+//     ANTES del disparo automático — sin consumir el historial
+//     k-de-n (el trigger se re-evalúa en el próximo frame).
+//   · F-ZSL: ring Best-Shot (máx 8 frames, ~5 Hz) del <video>; en
+//     captura manual el ganador pre-tap (80–450 ms) compensa el
+//     tap-shock (el impacto del dedo sacude el teléfono).
 //   · F-LENS: sondas SECUENCIALES de cámaras (cerrar SIEMPRE el
-//     MediaStream antes de abrir la siguiente — el bug v3 fue
-//     sondear con streams vivos → NotReadableError en Android).
-//   · Apertura con SOLO width:{ideal:3840} (E3, sin over-constrain).
-//   · Linterna verificada: apply + comprobar getSettings().torch
-//     + deshacer el "flash fantasma" (F-FLASH).
-//   · Frame loop con requestVideoFrameCallback (fallback rAF),
-//     backpressure por DESCARTE (nunca cola), quad vivo del
-//     worker y score compuesto 0.4·nitidez + 0.3·exposición
-//     + 0.3·estabilidad (k-de-n para autocaptura).
-//   · Captura WYSIWYG: la foto ES el fotograma del <video> (la
-//     MISMA lente angular que muestra la vista previa, a la
-//     resolución nativa del stream). Sin takePhoto: en Android
-//     el ImageCapture dispara con otra lente (gran angular) y
-//     el recuadro capturado no coincide con lo que ve el
-//     operador. iOS sin ImageCapture → cámara nativa.
+//     MediaStream antes de abrir la siguiente).
+//   · Preview ligero 960×540 @30: la captura ya no depende del
+//     stream; el preview solo alimenta la detección en vivo
+//     (detector a ≤400 px) y el ring ZSL — mitad de GPU en gama
+//     baja. Si la detección viva empeorara, subir a 1280×720 (ver
+//     INSTRUCCIONES-CAMARA-v63.md Fase D).
+//   · Linterna verificada (F-FLASH v3). iOS/Safari sin ImageCapture
+//     → el shutter abre la cámara NATIVA (input capture).
+// WYSIWYG v6.2 reemplazado por decisión de producto — paridad con
+// web-scanner v6.3.
 // ============================================================
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/hooks/use-toast";
 import { detectarFrameRgba } from "./escaner";
 import type { Quad } from "./escaner";
+// [CAMARA v6.3] Utilidades del motor (scanner-core es AUTO-GENERADO
+// por sync:scanner — se importan, NO se reimplementan):
+import { MotionStabilizer } from "@/lib/scanner-core/motion-stabilizer";
+import {
+  buildCappedPhotoSettings,
+  clampBlobToSafeCap,
+  getSensorSafeCap,
+  profileSensor,
+  type SensorProfile,
+} from "@/lib/scanner-core/sensor-profiler";
 
 // ------------------------------------------------------------
 // Constantes de la especificación
 // ------------------------------------------------------------
-const IDEAL_CAPTURE_WIDTH = 3840; // E3: SOLO ancho ideal
+// F-D (v6.3): preview ligero — upstream usa exactamente 960×540 @30
+// (IDEAL_PREVIEW_WIDTH/HEIGHT/FPS de CameraView.tsx). La captura ya
+// NO depende del stream (takePhoto dispara al sensor físico).
+const IDEAL_PREVIEW_WIDTH = 960;
+const IDEAL_PREVIEW_HEIGHT = 540;
+const IDEAL_PREVIEW_FPS = 30;
+
 const FRONT_CAMERA_RE = /front|delantera|anterior|face|facial|selfie/i;
 const LENS_WORDS_RE = /ultra|gran angular|wide|angular|tele|teleobjetivo/i;
 const REAL_AF_MODES = new Set(["continuous", "single-shot"]);
@@ -73,6 +100,14 @@ interface HistorialMuestra {
   score: number;
 }
 
+/** Frame de video del burst: canvas a resolución del track + nitidez
+ *  medida a ≤400 px (la MISMA escala del ring ZSL y del frame loop →
+ *  ranking consistente, §5.4). */
+interface FrameCapturado {
+  canvas: HTMLCanvasElement;
+  nitidez: number;
+}
+
 export function useCamara(opts: OpcionesCamara) {
   const { activa, autocaptura = true, alCapturar, videoRef } = opts;
 
@@ -87,6 +122,31 @@ export function useCamara(opts: OpcionesCamara) {
   const rearmRef = useRef(false);
   const ultimoQuadRef = useRef<Quad | null>(null);
   const workerBusyRef = useRef(false);
+  // F-STAB — estabilizador de inercia (DeviceMotion) + compuerta de
+  // quietud: bloquea la auto-captura mientras la mano se acomoda o
+  // tiembla (4–8 Hz). 1 instancia por apertura (se destruye en detener).
+  const stabilizadorRef = useRef<MotionStabilizer | null>(null);
+  // F-ZSL — buffer circular Best-Shot: los últimos 8 fotogramas
+  // medidos del <video>. En captura MANUAL el ganador (mayor nitidez)
+  // entre 80 y 450 ms ANTES del tap sustituye al frame del instante
+  // del impacto (el tap-shock sacude mecánicamente el teléfono → foto
+  // borrosa; el frame pre-tap ya está estable — patrón Zero Shutter
+  // Lag de las cámaras nativas).
+  // Nota del port: upstream guarda lapVar bruto; aquí la nitidez
+  // NORMALIZADA de metricasDeFrame (monótona con lapVar → ranking
+  // equivalente), medida a la misma escala de ≤400 px.
+  const bestShotRingRef = useRef<
+    Array<{ canvas: HTMLCanvasElement; nitidez: number; timestamp: number }>
+  >([]);
+  const lastRingFeedRef = useRef(0);
+  const ringScratchRef = useRef<HTMLCanvasElement | null>(null);
+  /** F-SENSOR-PROFILER: perfil del sensor de FOTO del track vivo
+   *  (resolución nativa + tope seguro 4032/3200 px según la gama
+   *  medida). null = aún sin sondear. */
+  const sensorProfileRef = useRef<SensorProfile | null>(null);
+  /** iOS NO se rompe (regla 3): MISMO valor que hayImageCapture de
+   *  iniciar() — una sola fuente de verdad para el Dual Pipeline. */
+  const canTakePhotoRef = useRef(false);
 
   const [estadoCamara, setEstadoCamara] = useState<EstadoCamara>({
     estado: "iniciando",
@@ -133,6 +193,23 @@ export function useCamara(opts: OpcionesCamara) {
     quadHistRef.current = [];
     ultimoQuadRef.current = null;
     rearmRef.current = false;
+    // F-STAB: fuera la escucha de DeviceMotion (iniciar() re-crea el
+    // estabilizador en la próxima apertura).
+    stabilizadorRef.current?.destroy();
+    stabilizadorRef.current = null;
+    // F-ZSL: libera el buffer Best-Shot + scratch al cerrar la sesión
+    // (disciplina de RAM iOS, error #22 upstream — no esperar al GC).
+    for (const f of bestShotRingRef.current) {
+      f.canvas.width = 0;
+      f.canvas.height = 0;
+    }
+    bestShotRingRef.current = [];
+    lastRingFeedRef.current = 0;
+    if (ringScratchRef.current) {
+      ringScratchRef.current.width = 0;
+      ringScratchRef.current.height = 0;
+      ringScratchRef.current = null;
+    }
   }, []);
 
   // ----------------------------------------------------------
@@ -257,9 +334,20 @@ export function useCamara(opts: OpcionesCamara) {
       )[0];
     }
 
-    // Abrir SOLO la ganadora con cascada
+    // Abrir SOLO la ganadora con cascada. F-D (v6.3): preview ligero
+    // 960×540 @30 — la captura ya no depende del stream (takePhoto al
+    // sensor); el preview solo alimenta la detección viva (≤400 px) y
+    // el ring ZSL. El reintento SIN dimensiones queda como estaba.
     const intentos: MediaStreamConstraints[] = [
-      { video: { deviceId: { exact: ganadora.deviceId }, width: { ideal: IDEAL_CAPTURE_WIDTH } }, audio: false },
+      {
+        video: {
+          deviceId: { exact: ganadora.deviceId },
+          width: { ideal: IDEAL_PREVIEW_WIDTH },
+          height: { ideal: IDEAL_PREVIEW_HEIGHT },
+          frameRate: { ideal: IDEAL_PREVIEW_FPS },
+        },
+        audio: false,
+      },
       { video: { deviceId: { exact: ganadora.deviceId } }, audio: false },
     ];
     for (const c of intentos) {
@@ -275,11 +363,28 @@ export function useCamara(opts: OpcionesCamara) {
     return null;
   }, [gumConLimite]);
 
-  /** Cascada de emergencia (E3/E4): facingMode environment → video genérico */
+  /** Cascada de emergencia (E3/E4): facingMode environment → video genérico.
+   *  F-D: las dos primeras con preview ligero 960×540 @30. */
   const abrirConCascada = useCallback(async (): Promise<{ stream: MediaStream; track: MediaStreamTrack }> => {
     const cascadas: MediaStreamConstraints[] = [
-      { video: { facingMode: { exact: "environment" }, width: { ideal: IDEAL_CAPTURE_WIDTH } }, audio: false },
-      { video: { facingMode: "environment", width: { ideal: IDEAL_CAPTURE_WIDTH } }, audio: false },
+      {
+        video: {
+          facingMode: { exact: "environment" },
+          width: { ideal: IDEAL_PREVIEW_WIDTH },
+          height: { ideal: IDEAL_PREVIEW_HEIGHT },
+          frameRate: { ideal: IDEAL_PREVIEW_FPS },
+        },
+        audio: false,
+      },
+      {
+        video: {
+          facingMode: "environment",
+          width: { ideal: IDEAL_PREVIEW_WIDTH },
+          height: { ideal: IDEAL_PREVIEW_HEIGHT },
+          frameRate: { ideal: IDEAL_PREVIEW_FPS },
+        },
+        audio: false,
+      },
       { video: { facingMode: "environment" }, audio: false },
       { video: true, audio: false },
     ];
@@ -387,10 +492,136 @@ export function useCamara(opts: OpcionesCamara) {
   }, []);
 
   // ----------------------------------------------------------
-  // Captura WYSIWYG (F-LENS-CAPTURE): el fotograma del <video>
-  // ES la foto. Misma lente (angular) y MISMO encuadre que la
-  // vista previa en vivo — lo que el operador ve es lo que se
-  // digitaliza — a la resolución nativa del stream (ideal 3840).
+  // F-ZSL — ring Best-Shot + burst de respaldo (port v6.3)
+  // ----------------------------------------------------------
+
+  /** Copia el fotograma al ring (máx 8) y suelta YA el backing store
+   *  del expulsado (no espera al GC; disciplina de memoria iOS,
+   *  error #22 upstream). */
+  const pushRingFrame = useCallback((canvas: HTMLCanvasElement, nitidez: number) => {
+    const ring = bestShotRingRef.current;
+    const copia = document.createElement("canvas");
+    copia.width = canvas.width;
+    copia.height = canvas.height;
+    copia.getContext("2d")?.drawImage(canvas, 0, 0);
+    ring.push({ canvas: copia, nitidez, timestamp: performance.now() });
+    if (ring.length > 8) {
+      const expulsada = ring.shift();
+      if (expulsada) {
+        expulsada.canvas.width = 0;
+        expulsada.canvas.height = 0;
+      }
+    }
+  }, []);
+
+  /** Alimenta el ring desde el <video> vivo a ~5 Hz (mín 200 ms entre
+   *  feeds): garantiza que el buffer SIEMPRE cubra la ventana pre-tap
+   *  de 80–450 ms. Invocado desde el frame loop (frames PROCESADOS —
+   *  los descartados por backpressure no alimentan, igual que
+   *  upstream). Reutiliza UN scratch canvas a resolución del track:
+   *  coste por feed ≈ 1 drawImage + 1 medición a ≤400 px + 1 copia.
+   *  (La alternativa de reutilizar el canvas de ≤400 px del loop
+   *  ahorraría un drawImage, pero entregaría capturas de respaldo a
+   *  400 px — upstream entrega frames del preview 960×540.) */
+  const feedRingFromVideo = useCallback((): void => {
+    const ahora = performance.now();
+    if (ahora - lastRingFeedRef.current < 200) return;
+    lastRingFeedRef.current = ahora;
+    const video = videoRef.current;
+    if (!video || video.readyState < 2 || !video.videoWidth) return;
+    if (!ringScratchRef.current) ringScratchRef.current = document.createElement("canvas");
+    const scratch = ringScratchRef.current;
+    if (scratch.width !== video.videoWidth || scratch.height !== video.videoHeight) {
+      scratch.width = video.videoWidth;
+      scratch.height = video.videoHeight;
+    }
+    const ctx = scratch.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0);
+    pushRingFrame(scratch, medirNitidez(scratch, scratch.width, scratch.height));
+  }, [pushRingFrame]);
+
+  /** Instantánea del <video> a resolución del track + nitidez del MISMO
+   *  fotograma (medida a ≤400 px, la misma escala del ring → ranking
+   *  consistente, §5.4). Sincronónica y SIN encodear JPEG: el encode
+   *  solo ocurre si el frame gana el burst. */
+  const snapshotVideo = useCallback((): FrameCapturado | null => {
+    const video = videoRef.current;
+    if (!video || video.readyState < 2 || !video.videoWidth) return null;
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(video, 0, 0);
+    const nitidez = medirNitidez(canvas, canvas.width, canvas.height);
+    // F-ZSL: alimenta el buffer Best-Shot con este fotograma medido.
+    pushRingFrame(canvas, nitidez);
+    return { canvas, nitidez };
+  }, [pushRingFrame]);
+
+  // ----------------------------------------------------------
+  // DUAL PIPELINE (pilar 2) — Captura a RESOLUCIÓN DEL SENSOR como
+  // Blob (aún SIN convertir a data URL): takePhoto() IGNORA la
+  // resolución del <video> de 540p y dispara directo al sensor físico
+  // (12–48 MP, p.ej. 4000×3000). Carrera de 8 s (takePhoto puede
+  // colgarse — error #29 upstream); null → el llamador cae al burst
+  // [zsl, snapA, snapB]. La orientación EXIF la aplica el pipeline al
+  // decodificar (createImageBitmap(..., { imageOrientation:
+  // "from-image" }) en escaner.ts) — la foto llega bien orientada.
+  // ----------------------------------------------------------
+  const takePhotoBlob = useCallback(async (): Promise<Blob | null> => {
+    const track = trackRef.current;
+    if (!track || typeof ImageCapture === "undefined") return null;
+    try {
+      const capture = new ImageCapture(track);
+      // El sensor manda, el preview no limita... EXCEPTO cuando el
+      // sensor excede el tope seguro (48/108 MP): el F-SENSOR-PROFILER
+      // pide al ISP una foto dentro del tope EN la captura (capa 1) y
+      // el blob del gigante jamás llega a decodificarse.
+      const profile = sensorProfileRef.current;
+      const settings = profile ? buildCappedPhotoSettings(profile) : undefined;
+      const attempt = async (ps?: PhotoSettings): Promise<Blob | null> => {
+        try {
+          const blob = await Promise.race([
+            capture.takePhoto(ps),
+            new Promise<never>((_, reject) =>
+              window.setTimeout(() => reject(new Error("takePhoto timeout 8s")), 8000)
+            ),
+          ]);
+          return blob && blob.size > 0 ? blob : null;
+        } catch {
+          return null;
+        }
+      };
+      let blob = await attempt(settings);
+      // Reintento sin photoSettings si el ajuste del profiler fue
+      // rechazado (hardware exótico): mejor foto sin tope que perder
+      // la captura.
+      if (!blob && settings) blob = await attempt(undefined);
+      if (!blob) return null;
+      // Capa 2 — red de seguridad post-decode (solo recorta si el
+      // blob excede el tope; si no, el blob original pasa intacto).
+      return await clampBlobToSafeCap(blob, profile?.safeCapPx ?? getSensorSafeCap());
+    } catch {
+      return null;
+    }
+  }, []);
+
+  // ----------------------------------------------------------
+  // Captura inteligente (port de captureSmart v6.3):
+  // la FOTO FULL-SENSOR MANDA (12–48 MP vía takePhoto, independiente
+  // del preview de 540p):
+  //   1. Frame A: solo píxeles + medidas (respaldo sin coste).
+  //   2. Foto hi-res del sensor (takePhoto, carrera de 8 s) → data URL.
+  //   3. Si hay foto → dispatch YA (los frames se descartan, R-14).
+  // Fallback premium si takePhoto no existe o cuelga: el ganador ZSL
+  // pre-tap (80–450 ms antes del disparo, anti tap-shock) del ring
+  // Best-Shot compite por nitidez con snapA/snapB — nunca un frame
+  // reemplaza una foto existente (F-RES-PRIORITY: una foto algo
+  // blanda a 3264 px siempre supera a un frame perfecto de 540p; el
+  // enhance afina, retomar cuesta un toque). Cooldown anti
+  // doble-disparo 1500 ms (§5.2).
   // ----------------------------------------------------------
   const capturar = useCallback(async (): Promise<void> => {
     const video = videoRef.current;
@@ -398,34 +629,102 @@ export function useCamara(opts: OpcionesCamara) {
     if (procesandoRef.current) return;
     if (Date.now() < cooldownRef.current) return;
     procesandoRef.current = true;
-    notificarCapturado();
+    notificarCapturado(); // (= notifyCaptured: historial + rearm + cooldown 1500)
     setParcial({ scoreVivo: null, armada: false });
 
-    try {
-      const vw = video.videoWidth || 1280;
-      const vh = video.videoHeight || 720;
-      const canvasA = document.createElement("canvas");
-      canvasA.width = vw;
-      canvasA.height = vh;
-      const ctxA = canvasA.getContext("2d", { willReadFrequently: true });
-      if (!ctxA) throw new Error("canvas");
-      ctxA.drawImage(video, 0, 0, vw, vh);
-      const dataUrl = await lienzoADataUrl(canvasA);
-      // R-14: soltar el backing store YA
-      canvasA.width = 0;
-      canvasA.height = 0;
-      if (!dataUrl) throw new Error("No se pudo capturar");
-      alCapturarRef.current(dataUrl);
-    } catch {
-      toast({
-        title: "No se pudo capturar",
-        description: "Inténtalo de nuevo.",
-        variant: "destructive",
+    /** F-ZSL — recupera el ganador pre-tap del buffer Best-Shot (mayor
+     *  nitidez entre 80 y 450 ms antes del disparo: el impacto del dedo
+     *  sacude mecánicamente el teléfono, el frame PRE-tap ya está
+     *  estable) y VACÍA el ring. Frame listo para el burst o null. */
+    const takeZslFallback = (): FrameCapturado | null => {
+      const ahoraMs = performance.now();
+      const ring = bestShotRingRef.current;
+      const enVentana = ring.filter((f) => {
+        const edad = ahoraMs - f.timestamp;
+        return edad >= 80 && edad <= 450;
       });
+      const ganador =
+        enVentana.length > 0
+          ? enVentana.reduce((a, b) => (b.nitidez > a.nitidez ? b : a))
+          : null;
+      // El disparo se atiende: libera el ring (disciplina RAM) EXCEPTO
+      // el canvas del ganador — su propiedad pasa al burst
+      // (liberarFrame lo suelta al terminar el dispatch). Ponerlo a 0
+      // aquí rompería el encode (canvas 0×0 → toBlob null /
+      // toDataURL InvalidStateError).
+      for (const f of ring) {
+        if (f === ganador) continue;
+        f.canvas.width = 0;
+        f.canvas.height = 0;
+      }
+      bestShotRingRef.current = [];
+      if (!ganador) return null;
+      // El canvas del ring ya es una copia dedicada: entrega directo.
+      return { canvas: ganador.canvas, nitidez: ganador.nitidez };
+    };
+
+    /** Mejor frame por nitidez → encode SOLO del ganador → dispatch. */
+    const despacharMejorFrame = async (frames: Array<FrameCapturado | null>): Promise<void> => {
+      const validos = frames.filter((f): f is FrameCapturado => f !== null);
+      if (validos.length === 0) {
+        toast({ title: "No se pudo capturar", description: "Inténtalo de nuevo.", variant: "destructive" });
+        return;
+      }
+      const ganador = validos.reduce((a, b) => (b.nitidez > a.nitidez ? b : a));
+      const url = await lienzoADataUrl(ganador.canvas);
+      for (const f of validos) liberarFrame(f);
+      if (url) {
+        alCapturarRef.current(url);
+      } else {
+        // encode falló → feedback en vez de descartar el disparo.
+        toast({ title: "No se pudo capturar", description: "Inténtalo de nuevo.", variant: "destructive" });
+      }
+    };
+
+    try {
+      // §5.4 — frame A ANTES de la foto: si takePhoto cuelga y cae (8 s),
+      // ya queda un candidato válido medido.
+      const snapA = snapshotVideo();
+      const photoBlob = canTakePhotoRef.current ? await takePhotoBlob() : null;
+      if (!photoBlob) {
+        // takePhoto colgó (> 8 s) o no existe: avisamos solo con stream
+        // real — el fotograma de preview (540p) es un recurso, no el
+        // estándar.
+        if (estadoRef.current.esCamaraReal) {
+          toast({
+            title: "Cámara lenta: baja resolución esta vez",
+            description: "La foto de alta resolución no respondió; se guardó el fotograma de vista previa.",
+            duration: 6000,
+          });
+        }
+        // DUAL PIPELINE — fallback: el ganador ZSL pre-tap (estable,
+        // anti tap-shock) compite por nitidez con snapA y el frame
+        // actual.
+        const zsl = takeZslFallback();
+        await despacharMejorFrame([zsl, snapA, snapshotVideo()]);
+        return;
+      }
+
+      // F-RES-PRIORITY — la foto full-sensor SIEMPRE gana. Blob → data
+      // URL (FileReader); los frames de video se descartan (libera
+      // backing stores). NUNCA un frame de preview sustituye una foto
+      // full-sensor.
+      let fotoUrl: string | null = null;
+      try {
+        fotoUrl = await blobADataUrl(photoBlob);
+      } catch {
+        fotoUrl = null; // FileReader falló (rarísimo) → burst de frames
+      }
+      if (fotoUrl) {
+        liberarFrame(snapA);
+        alCapturarRef.current(fotoUrl);
+        return;
+      }
+      await despacharMejorFrame([snapA, snapshotVideo()]);
     } finally {
       procesandoRef.current = false;
     }
-  }, [notificarCapturado, setParcial]);
+  }, [notificarCapturado, setParcial, snapshotVideo, takePhotoBlob]);
 
   /** Disparo manual (shutter). Devuelve true si debe abrir cámara nativa. */
   const dispararManual = useCallback((): boolean => {
@@ -470,6 +769,11 @@ export function useCamara(opts: OpcionesCamara) {
 
           // métricas locales del MISMO frame (baratas)
           const metricas = metricasDeFrame(img.data, w, h);
+
+          // F-ZSL: alimenta el buffer Best-Shot (~5 Hz, autolimitado a
+          // 200 ms en feedRingFromVideo) — cubre la ventana pre-tap de
+          // 80–450 ms para la captura manual sin tap-shock.
+          feedRingFromVideo();
 
           // detección en el worker (si no hay quad nuevo, se conserva el último)
           const buf = img.data.buffer.slice(0) as ArrayBuffer;
@@ -519,6 +823,15 @@ export function useCamara(opts: OpcionesCamara) {
           // disparo k-de-n
           if (autocapturaRef.current && Date.now() >= cooldownRef.current) {
             if (registrarMuestra(score) && !procesandoRef.current) {
+              // F-STAB: verificar quietud del dispositivo ANTES de
+              // disparar (espejo exacto de frame-loop.ts:390–399) —
+              // bloquea la auto-captura si la mano se acomoda o tiembla
+              // (4–8 Hz) SIN consumir el historial: el trigger se
+              // re-evalúa en el siguiente frame. En desktop sin
+              // DeviceMotion, isDeviceStable devuelve stable tras
+              // 280 ms (comportamiento upstream idéntico).
+              const motion = stabilizadorRef.current?.isDeviceStable(280);
+              if (motion && !motion.stable) return; // re-evalúa en el próximo frame
               void capturar();
             }
           }
@@ -552,7 +865,7 @@ export function useCamara(opts: OpcionesCamara) {
       const video = videoRef.current;
       if (video) programarSiguiente(video);
     },
-    [capturar, registrarMuestra, setParcial]
+    [capturar, registrarMuestra, setParcial, feedRingFromVideo]
   );
 
   // ----------------------------------------------------------
@@ -572,8 +885,10 @@ export function useCamara(opts: OpcionesCamara) {
     const nonce = ++nonceRef.current;
     setParcial({ estado: "iniciando", mensaje: null, quadVivo: null, scoreVivo: null, armada: false });
 
-    // iOS/Safari sin ImageCapture → cámara nativa en el shutter
+    // iOS/Safari sin ImageCapture → cámara nativa en el shutter.
+    // canTakePhotoRef bebe de AQUÍ: una sola fuente de verdad (regla 3).
     const hayImageCapture = typeof ImageCapture !== "undefined";
+    canTakePhotoRef.current = hayImageCapture;
 
     let stream: MediaStream | null = null;
     let track: MediaStreamTrack | null = null;
@@ -613,6 +928,20 @@ export function useCamara(opts: OpcionesCamara) {
 
     streamRef.current = stream;
     trackRef.current = track;
+
+    // F-STAB: estabilizador de inercia 1 vez por apertura (detener lo
+    // destruye) — la escucha de DeviceMotion vive lo que vive la cámara.
+    if (!stabilizadorRef.current) stabilizadorRef.current = new MotionStabilizer();
+
+    // F-SENSOR-PROFILER: sondea el sensor de FOTO del stream REAL una
+    // vez por apertura (fire-and-forget; falla en silencio en Safari →
+    // takePhoto dispara a secas y el clamp post-decode protege la RAM).
+    const trackActivo = trackRef.current;
+    if (trackActivo) {
+      void profileSensor(trackActivo).then((p) => {
+        sensorProfileRef.current = p;
+      });
+    }
 
     const video = videoRef.current;
     if (video) {
@@ -720,6 +1049,30 @@ function metricasDeFrame(
   return { nitidez, exposicion };
 }
 
+/** Mide la nitidez normalizada (lapVar/300 — la MISMA matemática de
+ *  metricasDeFrame) de una fuente a ≤400 px de lado mayor, sin encode
+ *  ni decode (§5.4). Mismo canvas de medición que usa el frame loop →
+ *  ranking consistente entre el ring ZSL y los snapshots del burst.
+ *  (Equivalente del measurePixels de upstream: ahí lapVar bruto, aquí
+ *  la nitidez normalizada — monótona con lapVar.) */
+function medirNitidez(src: CanvasImageSource, sw: number, sh: number): number {
+  if (!(sw > 0) || !(sh > 0)) return 0;
+  const escala = Math.min(1, FRAME_MAX / Math.max(sw, sh));
+  const w = Math.max(1, Math.round(sw * escala));
+  const h = Math.max(1, Math.round(sh * escala));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return 0;
+  ctx.drawImage(src, 0, 0, w, h);
+  const m = metricasDeFrame(ctx.getImageData(0, 0, w, h).data, w, h);
+  // R-14: el canvas de medición es efímero.
+  canvas.width = 0;
+  canvas.height = 0;
+  return m.nitidez;
+}
+
 function varianzaQuad(a: Quad, b: Quad): number {
   let suma = 0;
   for (let i = 0; i < 4; i++) {
@@ -748,18 +1101,43 @@ function excentricidadDe(quad: Quad): number {
   return Math.max(0.25, Math.min(1, minD / base));
 }
 
-async function lienzoADataUrl(canvas: HTMLCanvasElement): Promise<string | null> {
-  return new Promise((resolve) => {
-    canvas.toBlob(
-      (blob) => {
-        if (!blob) return resolve(null);
-        const fr = new FileReader();
-        fr.onload = () => resolve(String(fr.result));
-        fr.onerror = () => resolve(null);
-        fr.readAsDataURL(blob);
-      },
-      "image/jpeg",
-      0.92
-    );
+/** R-14 — suelta YA el backing store del canvas perdedor (no espera al
+ *  GC; disciplina de memoria iOS, error #22). */
+function liberarFrame(f: FrameCapturado | null): void {
+  if (f) {
+    f.canvas.width = 0;
+    f.canvas.height = 0;
+  }
+}
+
+/** Blob → data URL (para el takePhoto hi-res del Dual Pipeline). */
+function blobADataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result ?? ""));
+    fr.onerror = () => reject(new Error("FileReader falló"));
+    fr.readAsDataURL(blob);
   });
+}
+
+/** Canvas → data URL JPEG 0.92 (toBlob — NUNCA toDataURL en canvas
+ *  grande, error #22 — con toDataURL de respaldo si toBlob/FileReader
+ *  fallan). Se llama PEREZOSAMENTE: solo sobre el frame que GANA el
+ *  burst §5.4. */
+async function lienzoADataUrl(canvas: HTMLCanvasElement): Promise<string | null> {
+  const blob = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob((b) => resolve(b), "image/jpeg", 0.92)
+  );
+  if (blob && blob.size > 0) {
+    try {
+      return await blobADataUrl(blob);
+    } catch {
+      /* cae al toDataURL de abajo */
+    }
+  }
+  try {
+    return canvas.toDataURL("image/jpeg", 0.92);
+  } catch {
+    return null;
+  }
 }

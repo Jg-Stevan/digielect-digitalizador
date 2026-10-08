@@ -1,6 +1,6 @@
 {
   "name": "digielect-digitalizador",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "PWA del jurado de votación — Digitalizador E-14. Escaneo en alta calidad, OCR de ruteo por campos impresos, cola offline. Integración con digielect por contrato (API de ingesta).",
   "scripts": {

@@ -7,8 +7,9 @@
 // handles, top bar mínima (✕ / IA+AUTO / ⋮ menú), banners de
 // contexto, medidor de calidad, dock inferior (Importar |
 // disparador | Flash) y selector de ACTAS REALES.
-// La lógica (useCamara, autocaptura k-de-n, captureSmart,
-// entrega de archivos, flashes) NO cambió.
+// La lógica (useCamara v6.3: Dual Pipeline takePhoto + F-STAB +
+// F-ZSL + F-SENSOR-PROFILER, autocaptura k-de-n, entrega de
+// archivos, flashes) vive en el hook.
 // ============================================================
 
 import { useEffect, useMemo, useRef, useState } from "react";
