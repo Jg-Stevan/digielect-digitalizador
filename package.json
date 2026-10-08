@@ -5,7 +5,7 @@
   "description": "PWA del jurado de votación — Digitalizador E-14. Escaneo en alta calidad, OCR de ruteo por campos impresos, cola offline. Integración con digielect por contrato (API de ingesta).",
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "node scripts/gen-sw.mjs && next build",
     "lint": "eslint .",
     "tsc": "tsc --noEmit",
     "sync:scanner": "node scripts/sync-scanner.mjs",

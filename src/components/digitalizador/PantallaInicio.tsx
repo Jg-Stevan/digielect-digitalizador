@@ -33,6 +33,7 @@ import { cn } from "@/lib/utils";
 import { useDigitalizador } from "@/lib/digitalizador/store";
 import { contarFilasPuesto } from "@/services/puestoStorage";
 import type { PuestoAsignado } from "@/services/puestoStorage";
+import { MOTOR_VERSION } from "@/lib/motor-version";
 
 export default function PantallaInicio() {
   const irA = useDigitalizador((s) => s.irA);
@@ -268,6 +269,10 @@ export default function PantallaInicio() {
           </div>
         </DialogContent>
       </Dialog>
+      {/* [FASE 8] Versiones visibles: app + motor de visión */}
+      <p className="text-center text-[9px] uppercase tracking-[0.2em] text-ind-on-surface-var/70">
+        App v{process.env.NEXT_PUBLIC_APP_VERSION ?? "1.0.0"} · Motor {MOTOR_VERSION.slice(0, 8)}
+      </p>
     </section>
   );
 }

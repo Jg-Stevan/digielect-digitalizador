@@ -1,19 +1,35 @@
-// AUTO-GENERADO por scripts/gen-sw.mjs (build) — NO EDITAR A MANO.
+#!/usr/bin/env node
+// ============================================================
+// gen-sw — genera public/sw.js VERSIONADO por build (Fase 8)
+// CACHE = "digi-e14-v{APP_VERSION}+motor{MOTOR_SHA8}" — la versión
+// de la app y la del motor de visión rompen la caché juntas.
+// ============================================================
+
+import { readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const RAIZ = join(dirname(fileURLToPath(import.meta.url)), "..");
+const pkg = JSON.parse(readFileSync(join(RAIZ, "package.json"), "utf8"));
+const motor = readFileSync(join(RAIZ, "motor.ref"), "utf8").trim();
+const VERSION = `v${pkg.version}+motor${motor.slice(0, 8)}`;
+
+const SW = `// AUTO-GENERADO por scripts/gen-sw.mjs (build) — NO EDITAR A MANO.
 // [FASE-8] Service Worker versionado. La versión viaja en el nombre
 // de caché: publicar una versión nueva = caché nueva (sin skipWaiting
 // silencioso: la app muestra el banner "Nueva versión disponible").
-const VERSION = "v1.0.0+motorc225fbea";
-const CACHE_SHELL = `digi-e14-shell-${VERSION}`;
-const CACHE_MOTOR = `digi-e14-motor-${VERSION}`;
-const CACHE_RUNTIME = `digi-e14-runtime-${VERSION}`;
-const CACHE_CATALOGO = `digi-e14-catalogo-${VERSION}`;
+const VERSION = "${VERSION}";
+const CACHE_SHELL = \`digi-e14-shell-\${VERSION}\`;
+const CACHE_MOTOR = \`digi-e14-motor-\${VERSION}\`;
+const CACHE_RUNTIME = \`digi-e14-runtime-\${VERSION}\`;
+const CACHE_CATALOGO = \`digi-e14-catalogo-\${VERSION}\`;
 
 // Shell mínimo (la ruta raíz con basePath la resuelve el scope)
 const SHELL_REL = ["", "manifest.webmanifest", "icon.svg", "e14/icono-pwa.svg"];
 
 // Motor de visión + OCR local (offline estricto — Invariante 6)
 const MOTOR_URLS = [
-  "scanner/detection-worker.js?v=c225fbea91ebf76bea12fe4ad355f578b4bff3d5",
+  "scanner/detection-worker.js?v=${motor}",
   "vendor/opencv-4.5.5.js",
   "vendor/opencv-4.5.5-core.js",
   "ocr/tesseract/tesseract.min.js",
@@ -127,3 +143,7 @@ self.addEventListener("fetch", (evento) => {
     )
   );
 });
+`;
+
+writeFileSync(join(RAIZ, "public/sw.js"), SW, "utf8");
+console.log(`✓ public/sw.js generado — versión ${VERSION}`);
