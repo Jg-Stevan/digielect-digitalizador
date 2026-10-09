@@ -63,3 +63,25 @@ Stage Summary:
 - Archivos tocados: src/lib/ocr/{motor-ocr.ts, zonas-e14.ts, ruteo.ts, ruteo-catalogo.ts (nuevo), senales-impresas.ts (nuevo), telemetria.ts (nuevo), gancho-golden.ts (nuevo)}, src/lib/identificacion-acta.ts, src/lib/scanner/ocr-local.ts, src/lib/digitalizador/{store.ts, use-camara.ts, actas-reales.ts}, src/components/digitalizador/{PantallaRevision.tsx, PantallaContingencia.tsx, PantallaControl.tsx, PantallaCaptura.tsx, PantallaInicio.tsx, DigitalizadorApp.tsx}, tests/ocr-golden.spec.mjs (nuevo), tests/golden/{esperado-ocr.json (nuevo), corpus/README.md (nuevo)}, .gitignore.
 - Pendiente (requiere material del usuario): subir las 4 JPG del corpus Kit 399 a public/actas/ + tests/golden/corpus/ con los nombres de tests/golden/corpus/README.md → correr golden en modo GOLDEN_STRICT=1 (aceptación F1.5: 4/4 tipo+página solo con señales impresas).
 - Evidencia: baseline 67.5% (27/40) con detalle por acta en la salida de `bunx playwright test tests/ocr-golden.spec.mjs --reporter=list`; pipeline in-page 335_005_02-1 IDENTIFICADA 0.99 + barcode15 exacto + KIT/Civ exactos; motor golden 4/4.
+
+---
+Task ID: 8 (push + PR #9 + CI medición + merge + Pages)
+Agent: main (Z.ai Code)
+Task: Push de feat/plan-deteccion-v2, PR a main, paso CI golden OCR en modo medición, merge y verificación del deploy en GitHub Pages
+
+Work Log:
+- ci.yml: nuevo paso "Golden OCR — modo medición (sin GOLDEN_STRICT; tabla en el log)" — sirve el export en :4174 y corre `bunx playwright test tests/ocr-golden.spec.mjs --reporter=list`; la tabla pass-rate por campo queda impresa en el log del run (los Kit 399 sin JPG se saltan; las 8 actas del repo SÍ corren).
+- ocr-golden.spec.mjs: test.setTimeout (240 s por caso, 300 s el umbral global) porque los runners de CI son más lentos que local (real local: 13.6 s el umbral, ~4.5 s por acta).
+- Validación local previa al push: golden OCR completo en modo medición → TOTAL 27/40 (67.5%), idéntico al baseline; YAML del ci.yml validado.
+- Push de feat/plan-deteccion-v2 → PR #9 (https://github.com/Jg-Stevan/digielect-digitalizador/pull/9).
+- CI 1er run FALLO en contract test: "ruteo.ts menciona votos/candidaturas fuera de comentarios" — T7 había introducido `candidatasMesa` + motivo "único candidato plausible" (inocuos semánticamente, pero la regla de producto es literal). FIX: renombrado a `mesasDelPuesto` / motivo "única mesa plausible del puesto" (commit 58ee330). El test de contrato NO se tocó (anti-regresión). Nota: test:contrato no se había corrido localmente tras T7 — ahora es parte del chequeo pre-push.
+- CI 2º run VERDE (run 37873530096): lint, tsc, contract, build, motor golden 4/4 y Golden OCR medición con tabla en el log → TOTAL 27/40 (67.5%).
+- Merge del PR #9 a main (merge commit 3d3add8) · Deploy a GitHub Pages exitoso (run 37873857735).
+- Verificación de Pages: https://jg-stevan.github.io/digielect-digitalizador/ → HTTP 200, título correcto, 9 chunks servidos; bundle contiene __digielectOcrGolden (T0), candidatosRescate (T8), "SEGUIR ESCANEANDO", "TRANSMITIR CON ADVERTENCIA", "Revisión requerida", "NO RECONOCIDA", "OBLIGATORIO REPETIR FOTO", "ENVIAR A REVISIÓN HUMANA".
+- main local sincronizado a 3d3add8; ZIP de entrega regenerado con git archive (22.4 MB, 193 archivos) en public/ + copia en el sandbox.
+- Token de push usado por URL efímera (nunca persistido en .git/config ni archivos; el zip NO contiene .git).
+
+Stage Summary:
+- feat/plan-deteccion-v2 MERGEADA a main y DEPLOYADA a Pages con todas las mejoras T0–T8 + Stitch. CI imprimiendo la tabla golden en cada run (modo medición, sin gate).
+- PENDIENTE (requiere material del usuario): las 4 JPG de corpus-golden/ → copiarlas a tests/golden/corpus/ + public/actas/ (nombres exactos en tests/golden/corpus/README.md), correr golden completo, reportar tabla post-mejoras vs baseline 67.5%. Si ≥80% → activar GOLDEN_STRICT=1 en el paso de CI. Si no → analizar campos fallando antes de tocar código.
+
