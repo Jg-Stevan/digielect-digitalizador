@@ -113,6 +113,10 @@ export function useCamara(opts: OpcionesCamara) {
 
   const streamRef = useRef<MediaStream | null>(null);
   const trackRef = useRef<MediaStreamTrack | null>(null);
+  // [T5] Torch AUTOMÁTICO en baja luz: hysteresis 0.35/0.45, nunca pelea
+  // con el toggle manual (solo apaga lo que encendió el auto).
+  const torchAutoActivoRef = useRef(false);
+  const ultTorchEvalRef = useRef(0);
   const rafRef = useRef<number | null>(null);
   const nonceRef = useRef(0);
   const procesandoRef = useRef(false);
@@ -770,6 +774,33 @@ export function useCamara(opts: OpcionesCamara) {
           // métricas locales del MISMO frame (baratas)
           const metricas = metricasDeFrame(img.data, w, h);
 
+          // [T5] Torch automático en baja luz (evaluación cada 2 s):
+          //  · brillo < 0.35 → encender si el track lo soporta
+          //  · brillo > 0.45 → apagar SOLO si lo encendió el auto
+          // Todo con try/catch — en desktop/sin torch: no-op silencioso.
+          const ahoraTorch = Date.now();
+          if (ahoraTorch - ultTorchEvalRef.current >= 2000) {
+            ultTorchEvalRef.current = ahoraTorch;
+            try {
+              const t = trackRef.current;
+              const caps = (t?.getCapabilities?.() ?? {}) as MediaTrackCapabilities & {
+                torch?: boolean;
+              };
+              const soporta = Boolean(caps.torch);
+              if (soporta) {
+                if (metricas.brillo < 0.35 && !estadoRef.current.torchOn && !torchAutoActivoRef.current) {
+                  const ok = await encenderTorch(true);
+                  torchAutoActivoRef.current = ok;
+                } else if (metricas.brillo > 0.45 && torchAutoActivoRef.current) {
+                  const ok = await encenderTorch(false);
+                  if (ok) torchAutoActivoRef.current = false;
+                }
+              }
+            } catch {
+              /* sin torch o fallo transitorio: comportamiento intacto */
+            }
+          }
+
           // F-ZSL: alimenta el buffer Best-Shot (~5 Hz, autolimitado a
           // 200 ms en feedRingFromVideo) — cubre la ventana pre-tap de
           // 80–450 ms para la captura manual sin tap-shock.
@@ -865,7 +896,7 @@ export function useCamara(opts: OpcionesCamara) {
       const video = videoRef.current;
       if (video) programarSiguiente(video);
     },
-    [capturar, registrarMuestra, setParcial, feedRingFromVideo]
+    [capturar, registrarMuestra, setParcial, feedRingFromVideo, encenderTorch]
   );
 
   // ----------------------------------------------------------
@@ -1015,7 +1046,7 @@ function metricasDeFrame(
   rgba: Uint8ClampedArray,
   w: number,
   h: number
-): { nitidez: number; exposicion: number } {
+): { nitidez: number; exposicion: number; brillo: number } {
   const n = w * h;
   const gris = new Uint8ClampedArray(n);
   let suma = 0;
@@ -1046,7 +1077,9 @@ function metricasDeFrame(
   const varLap = nL > 0 ? sl2 / nL - (sl / nL) * (sl / nL) : 0;
   const nitidez = Math.max(0, Math.min(1, varLap / 300));
   const exposicion = 1 - Math.min(1, (under + over) / n);
-  return { nitidez, exposicion };
+  // [T5] Brillo medio 0-1 (luminancia) para el torch automático
+  const brillo = n > 0 ? Math.max(0, Math.min(1, suma / n / 255)) : 0.5;
+  return { nitidez, exposicion, brillo };
 }
 
 /** Mide la nitidez normalizada (lapVar/300 — la MISMA matemática de

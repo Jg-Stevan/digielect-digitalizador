@@ -1,0 +1,103 @@
+{
+  "comentario": "Golden OCR del plan de mejora (plan-mejora-deteccion-actas.md §T0). Divipol esperado por acta + señales impresas del corpus Kit 399 (El Cairo). Las 4 páginas Kit 399 van en tests/golden/corpus/ y public/actas/ con ESTOS nombres exactos; mientras no estén subidas el spec las SALTA (SKIP) sin fallar. Umbral etapa 1 (T0-T4): >=0.80 campos correctos en Kit 399 · etapa 2 (T5-T8): >=0.95 corpus completo.",
+  "zonasPistas": {
+    "barcodeImpreso": [0.2, 0.04, 0.8, 0.018],
+    "footer": [0.0, 0.93, 1.0, 0.07],
+    "puesto": [0.315, 0.171, 0.065, 0.014],
+    "mesa": [0.465, 0.171, 0.09, 0.014]
+  },
+  "camposRuteo": ["departamento", "municipio", "zona", "puesto", "mesa"],
+  "casos": [
+    {
+      "imagen": "E14_KIT399_88_335_005_02_001_X_TRANSMISION-1.jpg",
+      "kit399": true,
+      "divipol": { "departamento": "88", "municipio": "335", "zona": "05", "puesto": "02", "mesa": "001" },
+      "codigoX": "7231019",
+      "tipo": "TRANSMISION",
+      "pagina": 1,
+      "barcode15": "710003993010102",
+      "kit": 399,
+      "civ": 797,
+      "ancla": "NIVELACION DE LA MESA"
+    },
+    {
+      "imagen": "E14_KIT399_88_335_005_02_001_X_TRANSMISION-2.jpg",
+      "kit399": true,
+      "divipol": { "departamento": "88", "municipio": "335", "zona": "05", "puesto": "02", "mesa": "001" },
+      "codigoX": "7231019",
+      "tipo": "TRANSMISION",
+      "pagina": 2,
+      "barcode15": "710003993010202",
+      "kit": 399,
+      "civ": 798,
+      "ancla": "HUBO RECUENTO"
+    },
+    {
+      "imagen": "E14_KIT399_88_335_005_02_001_X_DELEGADOS-1.jpg",
+      "kit399": true,
+      "divipol": { "departamento": "88", "municipio": "335", "zona": "05", "puesto": "02", "mesa": "001" },
+      "codigoX": "7231019",
+      "tipo": "DELEGADOS",
+      "pagina": 1,
+      "barcode15": "710003992010102",
+      "kit": 399,
+      "civ": 797,
+      "ancla": "CONSUL/EMBAJADOR"
+    },
+    {
+      "imagen": "E14_KIT399_88_335_005_02_001_X_DELEGADOS-2.jpg",
+      "kit399": true,
+      "divipol": { "departamento": "88", "municipio": "335", "zona": "05", "puesto": "02", "mesa": "001" },
+      "codigoX": "7231019",
+      "tipo": "DELEGADOS",
+      "pagina": 2,
+      "barcode15": "710003992010202",
+      "kit": 399,
+      "civ": 798,
+      "ancla": "CONSUL/EMBAJADOR + HUBO RECUENTO"
+    },
+    {
+      "imagen": "E14_XXX_X_88_335_005_02_000_X_XXX-1.jpg",
+      "kit399": false,
+      "divipol": { "departamento": "88", "municipio": "335", "zona": "05", "puesto": "02", "mesa": "001" },
+      "mesaIdSugerido": "mesa-el-cairo-001"
+    },
+    {
+      "imagen": "E14_XXX_X_88_335_005_02_000_X_XXX-2.jpg",
+      "kit399": false,
+      "divipol": { "departamento": "88", "municipio": "335", "zona": "05", "puesto": "02", "mesa": "001" }
+    },
+    {
+      "imagen": "E14_XXX_X_88_495_010_02_000_X_XXX-1.jpg",
+      "kit399": false,
+      "divipol": { "departamento": "88", "municipio": "495", "zona": "10", "puesto": "02", "mesa": "001" },
+      "mesaIdSugerido": "mesa-roma-001"
+    },
+    {
+      "imagen": "E14_XXX_X_88_495_010_02_000_X_XXX-2.jpg",
+      "kit399": false,
+      "divipol": { "departamento": "88", "municipio": "495", "zona": "10", "puesto": "02", "mesa": "001" }
+    },
+    {
+      "imagen": "E14_XXX_X_88_335_005_81_000_X_XXX-1.jpg",
+      "kit399": false,
+      "divipol": { "departamento": "88", "municipio": "335", "zona": "05", "puesto": "81", "mesa": "001" }
+    },
+    {
+      "imagen": "E14_XXX_X_88_335_005_81_000_X_XXX-2.jpg",
+      "kit399": false,
+      "divipol": { "departamento": "88", "municipio": "335", "zona": "05", "puesto": "81", "mesa": "001" }
+    },
+    {
+      "imagen": "E14_XXX_X_88_355_003_08_000_X_XXX-1.jpg",
+      "kit399": false,
+      "divipol": { "departamento": "88", "municipio": "355", "zona": "03", "puesto": "08", "mesa": "001" }
+    },
+    {
+      "imagen": "E14_XXX_X_88_355_003_08_000_X_XXX-2.jpg",
+      "kit399": false,
+      "divipol": { "departamento": "88", "municipio": "355", "zona": "03", "puesto": "08", "mesa": "001" }
+    }
+  ],
+  "umbrales": { "etapa1": 0.8, "etapa2": 0.95 }
+}

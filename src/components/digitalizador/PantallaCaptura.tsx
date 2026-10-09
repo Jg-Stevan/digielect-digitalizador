@@ -38,7 +38,7 @@ import { archivoADataUrl } from "@/lib/digitalizador/escaner";
 // [OLA6 6.7 · A-5] Cableado del helper HEIC: importación robusta de
 // galería (nativo → heic2any vendorizado → compresión 3200px).
 import { archivoACapturaDataUrl } from "@/lib/scanner/heic";
-import { ACTAS_REALES, type ActaReal } from "@/lib/digitalizador/actas-reales";
+import { ACTAS_REALES, probarActasDisponibles, type ActaReal } from "@/lib/digitalizador/actas-reales";
 import { useCamara } from "@/lib/digitalizador/use-camara";
 import { useDigitalizador } from "@/lib/digitalizador/store";
 
@@ -62,6 +62,18 @@ export default function PantallaCaptura() {
   const [flash, setFlash] = useState(false);
   const [procesando, setProcesando] = useState(false);
   const [selectorActas, setSelectorActas] = useState(false);
+  // [T0] Actas de ejemplo disponibles (las 8 del repo + Kit 399 si
+  // sus JPG fueron subidas a public/actas/)
+  const [actasDisponibles, setActasDisponibles] = useState<ActaReal[]>(ACTAS_REALES);
+  useEffect(() => {
+    let vivo = true;
+    void probarActasDisponibles().then((lista) => {
+      if (vivo) setActasDisponibles(lista);
+    });
+    return () => {
+      vivo = false;
+    };
+  }, []);
   const [autocapturaOn, setAutocapturaOn] = useState(true);
   const [menuAbierto, setMenuAbierto] = useState(false);
 
@@ -601,7 +613,7 @@ export default function PantallaCaptura() {
             </DialogDescription>
           </DialogHeader>
           <div className="fine-scroll grid max-h-[52vh] grid-cols-2 gap-2 overflow-y-auto pr-1">
-            {ACTAS_REALES.map((a) => (
+            {actasDisponibles.map((a) => (
               <button
                 key={a.id}
                 type="button"

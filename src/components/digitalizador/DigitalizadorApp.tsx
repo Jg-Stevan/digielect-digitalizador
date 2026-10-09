@@ -22,6 +22,8 @@ import { useDigitalizador } from "@/lib/digitalizador/store";
 import { precalentarEscaner } from "@/lib/digitalizador/escaner";
 // [FASE-5] Precalentar el OCR de ruteo (tesseract local) en idle
 import { precalentarOcrRuteo } from "@/lib/ocr/motor-ocr";
+// [F0] Gancho de solo lectura para los golden tests OCR (window.__digielectOcrGolden)
+import "@/lib/ocr/gancho-golden";
 import { desbloquearAudio } from "@/lib/digitalizador/feedback";
 import type { Vista } from "@/lib/digitalizador/types";
 import PantallaCaptura from "./PantallaCaptura";

@@ -1,0 +1,185 @@
+// ============================================================
+// GOLDEN OCR — plan de mejora del acta E-14 (T0 · plan-mejora §F0)
+// ============================================================
+// Corre el pipeline OCR REAL de la app (expuesto por
+// src/lib/ocr/gancho-golden.ts en window.__digielectOcrGolden)
+// sobre las actas de corpus y compara contra tests/golden/esperado-ocr.json.
+//
+//   · Campos DIVIPOL: normalizados a dígitos y comparados tal cual.
+//   · Señales impresas (Kit 399): barcode15 impreso, Ver/Pag, KIT,
+//     Civ y banner — parseados con los módulos reales.
+//   · Las 4 páginas Kit 399 se SALTA si las JPG no están subidas.
+//   · Imprime la TABLA de pass-rate por campo (baseline en T0) y
+//     aplica el umbral de etapa (>=0.80 etapa 1 · >=0.95 etapa 2)
+//     SOLO sobre los casos ejecutables.
+//
+// Uso: GOLDEN_BASE_URL=http://localhost:3000 bunx playwright test tests/ocr-golden.spec.mjs --reporter=list
+// ============================================================
+
+import { readFileSync, existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { test, expect } from "@playwright/test";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const esperado = JSON.parse(readFileSync(join(__dirname, "golden/esperado-ocr.json"), "utf8"));
+const BASE = process.env.GOLDEN_BASE_URL ?? "http://localhost:3000";
+const UMBRAL = esperado.umbrales?.etapa1 ?? 0.8;
+
+/** Normaliza a dígitos con relleno (misma idea de resolverRuteo). */
+function normalizarCampo(valor, digitos) {
+  const d = String(valor ?? "").replace(/\D+/g, "");
+  if (!d) return null;
+  return d.slice(0, digitos).padStart(digitos, "0");
+}
+
+test.beforeAll("gancho golden disponible", async ({ browser }) => {
+  const page = await browser.newPage();
+  await page.goto(BASE + "/");
+  await page.locator("h1").first().waitFor({ state: "visible", timeout: 20_000 });
+  await page.waitForTimeout(1_500); // absorbe el reload del Service Worker
+  const hay = await page.evaluate(() => Boolean(window.__digielectOcrGolden));
+  expect(hay, "window.__digielectOcrGolden expuesto por gancho-golden.ts").toBe(true);
+  await page.close();
+});
+
+for (const caso of esperado.casos) {
+  test(`golden OCR: ${caso.imagen}`, async ({ browser }) => {
+    // La imagen debe existir en public/actas (los Kit 399 van llegando)
+    const rutaPublica = join(__dirname, "..", "public", "actas", caso.imagen);
+    if (!existsSync(rutaPublica)) {
+      test.info().annotations.push({ type: "SKIP", description: "corpus pendiente de subir a public/actas" });
+      test.skip(true, "corpus pendiente de subir a public/actas");
+      return;
+    }
+
+    const page = await browser.newPage();
+    await page.goto(BASE + "/");
+    await page.locator("h1").first().waitFor({ state: "visible", timeout: 20_000 });
+    await page.waitForTimeout(1_500);
+    await page.evaluate(() => window.__digielectOcrGolden.workerOcrRuteo());
+
+    const resultado = await page.evaluate(async ({ base, archivo }) => {
+      const G = window.__digielectOcrGolden;
+      const img = new Image();
+      img.src = `${base}/actas/${archivo}`;
+      await img.decode();
+      const c = document.createElement("canvas");
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      c.getContext("2d").drawImage(img, 0, 0);
+      const dataUrl = c.toDataURL("image/jpeg", 0.95);
+      c.width = 0;
+      c.height = 0;
+      const t0 = performance.now();
+      const campos = await G.reconocerZonasRuteo(dataUrl, G.ZONAS_RUTEO_E14);
+      const pistas = await G.reconocerPistas(dataUrl);
+      const bi = G.parsearBarcodeImpreso(pistas?.barcodeImpreso ?? null);
+      const ft = G.parsearFooter(pistas?.footer ?? null);
+      const banner = G.tipoDesdeBanner(pistas?.banner ?? null);
+      return {
+        campos,
+        pistas,
+        bi,
+        ft,
+        banner,
+        ms: Math.round(performance.now() - t0),
+      };
+    }, { base: BASE, archivo: caso.imagen });
+
+    await page.close();
+
+    // ── DIVIPOL por campo ──
+    const digitosEsperados = { departamento: 2, municipio: 3, zona: 2, puesto: 2, mesa: 3 };
+    const fallos = [];
+    for (const [campo, nd] of Object.entries(digitosEsperados)) {
+      const leido = normalizarCampo(resultado.campos?.[campo]?.valor, nd);
+      const esperadoCampo = normalizarCampo(caso.divipol?.[campo], nd);
+      const ok = leido != null && esperadoCampo != null && leido === esperadoCampo;
+      if (!ok) fallos.push(`${campo}: leído=${leido} esperado=${esperadoCampo}`);
+      console.log(`  ${ok ? "✓" : "✗"} ${campo.padEnd(12)} ${leido ?? "—"} (esperado ${esperadoCampo ?? "—"})`);
+    }
+
+    // ── Señales impresas (solo corpus Kit 399) ──
+    if (caso.kit399) {
+      const d15Ok = resultado.bi?.d15 === caso.barcode15;
+      console.log(`  ${d15Ok ? "✓" : "✗"} barcode15    ${resultado.bi?.d15 ?? "—"} (esperado ${caso.barcode15})`);
+      if (!d15Ok) fallos.push(`barcode15: leído=${resultado.bi?.d15} esperado=${caso.barcode15}`);
+
+      const pagOk = resultado.bi?.pag === caso.pagina;
+      console.log(`  ${pagOk ? "✓" : "✗"} Ver/Pag      pag=${resultado.bi?.pag ?? "—"} de=${resultado.bi?.de ?? "—"} (esperado p${caso.pagina} de 2)`);
+      if (!pagOk) fallos.push(`pagina impresa: leído=${resultado.bi?.pag} esperado=${caso.pagina}`);
+
+      const kitOk = resultado.ft?.kit === caso.kit;
+      console.log(`  ${kitOk ? "✓" : "✗"} KIT footer   ${resultado.ft?.kit ?? "—"} (esperado ${caso.kit})`);
+      if (!kitOk) fallos.push(`kit: leído=${resultado.ft?.kit} esperado=${caso.kit}`);
+
+      const civOk = resultado.ft?.civ === caso.civ;
+      console.log(`  ${civOk ? "✓" : "✗"} Civ footer   ${resultado.ft?.civ ?? "—"} (esperado ${caso.civ})`);
+      if (!civOk) fallos.push(`civ: leído=${resultado.ft?.civ} esperado=${caso.civ}`);
+
+      const bannerOk = resultado.banner === caso.tipo;
+      console.log(`  ${bannerOk ? "✓" : "✗"} banner       ${resultado.banner ?? "—"} (esperado ${caso.tipo})`);
+      if (!bannerOk) fallos.push(`banner: leído=${resultado.banner} esperado=${caso.tipo}`);
+    }
+
+    console.log(`  ⏱ OCR zonas+pistas: ${resultado.ms} ms`);
+    test.info().attach("fallos", { body: fallos.length ? fallos.join("\n") : "(sin fallos)", contentType: "text/plain" });
+    expect(fallos, fallos.join(" · ")).toHaveLength(0);
+  });
+}
+
+test("umbral de etapa: pass-rate global de los casos ejecutados", async ({ browser }) => {
+  // Recorre los casos ejecutables (imagen presente) y verifica el
+  // pass-rate de campos DIVIPOL >= umbral de etapa (0.80 etapa 1).
+  const page = await browser.newPage();
+  await page.goto(BASE + "/");
+  await page.locator("h1").first().waitFor({ state: "visible", timeout: 20_000 });
+  await page.waitForTimeout(1_500);
+  await page.evaluate(() => window.__digielectOcrGolden.workerOcrRuteo());
+
+  const ejecutables = esperado.casos.filter((c) =>
+    existsSync(join(__dirname, "..", "public", "actas", c.imagen))
+  );
+  test.skip(ejecutables.length === 0, "sin corpus ejecutable");
+
+  let total = 0;
+  let ok = 0;
+  const tabla = [];
+  for (const caso of ejecutables) {
+    const r = await page.evaluate(async ({ base, archivo }) => {
+      const G = window.__digielectOcrGolden;
+      const img = new Image();
+      img.src = `${base}/actas/${archivo}`;
+      await img.decode();
+      const c = document.createElement("canvas");
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      c.getContext("2d").drawImage(img, 0, 0);
+      const dataUrl = c.toDataURL("image/jpeg", 0.95);
+      c.width = 0;
+      c.height = 0;
+      const t0 = performance.now();
+      const campos = await G.reconocerZonasRuteo(dataUrl, G.ZONAS_RUTEO_E14);
+      return { campos, ms: Math.round(performance.now() - t0) };
+    }, { base: BASE, archivo: caso.imagen });
+    const digitosEsperados = { departamento: 2, municipio: 3, zona: 2, puesto: 2, mesa: 3 };
+    let okCaso = 0;
+    for (const [campo, nd] of Object.entries(digitosEsperados)) {
+      const leido = normalizarCampo(r.campos?.[campo]?.valor, nd);
+      const esp = normalizarCampo(caso.divipol?.[campo], nd);
+      const bien = leido != null && esp != null && leido === esp;
+      if (bien) okCaso++;
+      total++;
+      if (bien) ok++;
+    }
+    tabla.push(`${caso.imagen}: ${okCaso}/5 campos · ${r.ms} ms`);
+  }
+  await page.close();
+  const tasa = total > 0 ? ok / total : 0;
+  console.log("\n===== BASELINE GOLDEN OCR =====");
+  for (const fila of tabla) console.log("  " + fila);
+  console.log(`  TOTAL: ${ok}/${total} campos correctos (${(tasa * 100).toFixed(1)}%) · umbral etapa ${(UMBRAL * 100).toFixed(0)}%`);
+  console.log("===============================");
+  expect(tasa, `pass-rate ${(tasa * 100).toFixed(1)}% < umbral ${(UMBRAL * 100).toFixed(0)}%`).toBeGreaterThanOrEqual(UMBRAL);
+});

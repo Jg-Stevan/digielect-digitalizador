@@ -89,7 +89,7 @@ export type EstadoIdentificacion =
   | "NO_ENCONTRADA"
   | "CODIGO_ILEGIBLE";
 
-export type RutaIdentificacion = "EXACTA" | "HAMMING1" | null;
+export type RutaIdentificacion = "EXACTA" | "HAMMING1" | "HAMMING2" | null;
 
 export interface ResultadoIdentificacion {
   estado: EstadoIdentificacion;
@@ -119,6 +119,30 @@ export interface SenalesEjemplar {
   perfil: { pagina: 1 | 2 | null } | null;
 }
 
+/** Señales impresas baratas (plan-mejora F1.5) ya parseadas.
+ *  El llamador (store) las obtiene con reconocerPistas() + los
+ *  parseadores de senales-impresas.ts; este módulo sigue PURO. */
+export interface SenalesImpresasClasificacion {
+  /** 15 dígitos de la línea impresa bajo el código de barras */
+  barcode15Impreso?: string | null;
+  /** "Ver: 01" */
+  ver?: number | null;
+  /** "Pag: N de M" → N */
+  pagTexto?: number | null;
+  /** "Pag: N de M" → M */
+  deTexto?: number | null;
+  /** "KIT 399" del footer */
+  kitImpreso?: number | null;
+  /** "Civ 797/798" del footer (crudo) */
+  civ?: number | null;
+  /** Banner invertido: TRANSMISION vs DELEGADOS (CÓNSUL/EMBAJADOR) */
+  bannerTipo?: TipoEjemplar | null;
+  /** Voto de página del mapa aprendido Civ→página por kit
+   *  (calculado por el llamador con civAPagina() — este módulo
+   *  permanece puro/sin estado). null = kit sin enseñar → no vota. */
+  votoCiv?: 1 | 2 | null;
+}
+
 export interface ClasificacionEjemplar {
   /** 1 | 2 | null (null = conflicto o sin señales ⇒ rescan) */
   pagina: 1 | 2 | null;
@@ -128,6 +152,13 @@ export interface ClasificacionEjemplar {
   confianzaPagina: number;
   confianzaTipo: number;
   senales: SenalesEjemplar;
+  /** Señales impresas usadas (trazabilidad para la bandeja) */
+  impresas?: {
+    verpag: { pag: number; de: number } | null;
+    banner: TipoEjemplar | null;
+    votoCiv: 1 | 2 | null;
+    barcodeFamilia: "decodificado" | "impreso" | "reforzado" | null;
+  } | null;
   /** Descripciones de señal en conflicto (para la bandeja) */
   conflictos: string[];
   notas: string[];
@@ -337,6 +368,13 @@ function buscarHamming1(
   return candidatos;
 }
 
+function hammingDistancia(a: string, b: string): number {
+  if (a.length !== b.length) return Number.POSITIVE_INFINITY;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) d++;
+  return d;
+}
+
 /**
  * Identifica el acta contra el índice:
  *  · Match exacto + encabezado consistente        → IDENTIFICADA 0.99
@@ -423,6 +461,35 @@ export function identificarActa(args: {
   // Respaldo Hamming-1: un dígito mal leído (el OCR es local y imperfecto).
   const candidatos = buscarHamming1(codigo, indice);
   if (candidatos.length === 0) {
+    // [T8 · plan F5] Rescate extendido Hamming-2 — SOLO si el encabezado
+    // DIVIPOL completo deja un ÚNICO candidato consistente. Sin encabezado
+    // o con >1 consistente → NO_ENCONTRADA (jamás se adivina).
+    if (encabezado) {
+      const aDos = Array.from(indice.entries()).filter(
+        ([clave]) => hammingDistancia(codigo, clave) === 2,
+      );
+      const consistentes = aDos.filter(
+        ([, entrada]) => evaluarEncabezado(encabezado, entrada).length === 0,
+      );
+      if (consistentes.length === 1) {
+        const [clave, entrada] = consistentes[0];
+        notas.push(
+          `rescate Hamming-2 con encabezado consistente único hacia ${clave}`,
+        );
+        return {
+          estado: "IDENTIFICADA",
+          codigo: clave,
+          entrada,
+          confianza: 0.55,
+          ruta: "HAMMING2",
+          mismatches: [],
+          notas,
+        };
+      }
+      notas.push(
+        `Hamming-2: ${consistentes.length} candidatos consistentes con el encabezado (≠1): no se rescata`,
+      );
+    }
     notas.push(`código ${codigo} no existe en el índice (ni a 1 dígito)`);
     return {
       estado: "NO_ENCONTRADA",
@@ -489,6 +556,61 @@ export function identificarActa(args: {
     mismatches: [],
     notas,
   };
+}
+
+// ------------------------------------------------------------
+// [T8 · plan F5] Contingencia asistida: top-3 candidatos
+// ------------------------------------------------------------
+
+/** Un candidato del rescate para la UI de contingencia. */
+export interface CandidatoRescate {
+  /** Código de 7 dígitos del candidato (prellenado de un toque) */
+  codigo: string;
+  entrada: EntradaIndice;
+  /** Distancia de Hamming del código leído (1 o 2) */
+  distancia: number;
+  /** Campos del encabezado que contradicen (0 = consistente) */
+  mismatches: number;
+}
+
+/**
+ * Top-N candidatos ordenados para la contingencia asistida:
+ *  1º los Hamming-1 (menos mismatches primero), luego los Hamming-2
+ *  consistentes con el encabezado. NUNCA auto-envía: solo prellena —
+ *  la confirmación del operario es obligatoria (invariante intacto).
+ */
+export function candidatosRescate(
+  codigoCrudo: string | null | undefined,
+  encabezado: EncabezadoLeido | null | undefined,
+  indice: Map<string, EntradaIndice>,
+  max = 3,
+): CandidatoRescate[] {
+  const norm = normalizarCodigoTransmision(codigoCrudo);
+  if (!norm.codigo) return [];
+  const codigo = norm.codigo;
+
+  const hamming1 = Array.from(indice.entries())
+    .filter(([clave]) => hammingDistancia(codigo, clave) === 1)
+    .map(([clave, entrada]) => ({
+      codigo: clave,
+      entrada,
+      distancia: 1,
+      mismatches: evaluarEncabezado(encabezado, entrada).length,
+    }));
+  const hamming2 = Array.from(indice.entries())
+    .filter(([clave]) => hammingDistancia(codigo, clave) === 2)
+    .map(([clave, entrada]) => ({
+      codigo: clave,
+      entrada,
+      distancia: 2,
+      mismatches: evaluarEncabezado(encabezado, entrada).length,
+    }))
+    .filter((c) => c.mismatches === 0); // Hamming-2 solo si el encabezado respalda
+
+  const todos = [...hamming1, ...hamming2].sort(
+    (a, b) => a.distancia - b.distancia || a.mismatches - b.mismatches,
+  );
+  return todos.slice(0, Math.max(1, max));
 }
 
 // ------------------------------------------------------------
@@ -577,20 +699,60 @@ export function clasificarEjemplar(args: {
   textoOcr?: string | null;
   barcode15?: string | null;
   perfilTinta?: PerfilTinta | null;
+  /** [F1.5] Señales impresas (barcode de la línea impresa, Ver/Pag,
+   *  footer KIT/Civ, banner invertido) — ver SenalesImpresasClasificacion. */
+  impresas?: SenalesImpresasClasificacion | null;
 }): ClasificacionEjemplar {
-  const { textoOcr, barcode15, perfilTinta } = args;
+  const { textoOcr, barcode15, perfilTinta, impresas } = args;
   const notas: string[] = [];
   const conflictos: string[] = [];
 
-  // --- Señal barcode (determinista) ---
+  // --- Señal barcode (determinista) — UNA FAMILIA con sub-fuentes
+  // (decodificado del código de barras + línea impresa de dígitos).
+  // Si ambas existen y COINCIDEN → un solo voto reforzado; si
+  // DISCREPAN → conflicto explícito y NINGUNA vota (nunca adivinar).
   let senalBarcode: SenalesEjemplar["barcode"] = null;
-  const bc = barcode15 ? parseBarcode15(barcode15) : null;
-  if (bc) {
-    const tipoBc = bc.tipoEjemplar === "CLAVEROS" ? null : bc.tipoEjemplar;
-    senalBarcode = { pagina: bc.pagina <= 2 ? (bc.pagina as 1 | 2) : null, tipo: tipoBc };
-    if (tipoBc === null) notas.push("barcode indica CLAVEROS (E-14 interior): tipo no usable en exterior");
-  } else if (barcode15) {
-    notas.push("barcode15 leído pero inválido según estructura");
+  let barcodeFamilia: NonNullable<ClasificacionEjemplar["impresas"]>["barcodeFamilia"] = null;
+  const bcDecod = barcode15 ? parseBarcode15(barcode15) : null;
+  const bcImpreso =
+    impresas?.barcode15Impreso ? parseBarcode15(impresas.barcode15Impreso) : null;
+  if (bcDecod && bcImpreso) {
+    const mismaIdentidad =
+      bcDecod.tipoEjemplar === bcImpreso.tipoEjemplar &&
+      bcDecod.pagina === bcImpreso.pagina;
+    if (mismaIdentidad) {
+      const tipoBc = bcDecod.tipoEjemplar === "CLAVEROS" ? null : bcDecod.tipoEjemplar;
+      senalBarcode = { pagina: bcDecod.pagina <= 2 ? (bcDecod.pagina as 1 | 2) : null, tipo: tipoBc };
+      barcodeFamilia = "reforzado";
+      notas.push("barcode decodificado y línea impresa COINCIDEN (voto reforzado)");
+    } else {
+      conflictos.push(
+        `barcode decodificado (${bcDecod.tipoEjemplar}/p${bcDecod.pagina}) y línea impresa (${bcImpreso.tipoEjemplar}/p${bcImpreso.pagina}) discrepan`,
+      );
+      notas.push("familia barcode en conflicto interno: ningún voto de barcode");
+    }
+  } else {
+    const bc = bcDecod ?? bcImpreso;
+    if (bc) {
+      const tipoBc = bc.tipoEjemplar === "CLAVEROS" ? null : bc.tipoEjemplar;
+      senalBarcode = { pagina: bc.pagina <= 2 ? (bc.pagina as 1 | 2) : null, tipo: tipoBc };
+      barcodeFamilia = bc === bcDecod ? "decodificado" : "impreso";
+      if (tipoBc === null) notas.push("barcode indica CLAVEROS (E-14 interior): tipo no usable en exterior");
+      if (bc === bcImpreso) notas.push("página/tipo votados con la línea impresa del barcode (sin decodificar barras)");
+    } else if (barcode15) {
+      notas.push("barcode15 leído pero inválido según estructura");
+    }
+  }
+
+  // [F1.5] Cruce KIT impreso ↔ dígitos del barcode (familia viva):
+  // dígitos 3-8 del barcode = kit. Discrepancia → conflicto explícito.
+  if (impresas?.kitImpreso != null && bcDecod) {
+    const kitBc = Number.parseInt(String(bcDecod.kit).replace(/\D/g, ""), 10);
+    if (Number.isFinite(kitBc) && kitBc !== impresas.kitImpreso) {
+      conflictos.push(
+        `KIT impreso (${impresas.kitImpreso}) no coincide con el kit del barcode (${kitBc})`,
+      );
+    }
   }
 
   // --- Señal texto ---
@@ -610,6 +772,18 @@ export function clasificarEjemplar(args: {
     else notas.push("perfil de tinta sin rasgos distintivos (o contradictorio)");
   }
 
+  // --- [F1.5] Señales impresas: Ver/Pag (0.35 texto) · banner (0.35
+  // texto) · Civ (0.3, mapa aprendido por kit — voto, nunca regla dura)
+  const senalVerpag: { pag: 1 | 2; de: number } | null =
+    impresas?.pagTexto === 1 || impresas?.pagTexto === 2
+      ? { pag: impresas.pagTexto, de: impresas.deTexto ?? 2 }
+      : null;
+  if (senalVerpag && senalVerpag.de !== 2) {
+    notas.push(`total de páginas impreso (${senalVerpag.de}) ≠ 2: se usa como pista, no como voto duro`);
+  }
+  const senalBannerTipo: TipoEjemplar | null = impresas?.bannerTipo ?? null;
+  const senalCivPag: 1 | 2 | null = impresas?.votoCiv ?? null;
+
   const senales: SenalesEjemplar = {
     barcode: senalBarcode,
     texto: senalTexto,
@@ -621,6 +795,8 @@ export function clasificarEjemplar(args: {
   if (senalBarcode?.pagina != null) votosPagina.push({ valor: senalBarcode.pagina, peso: 0.5, fuente: "barcode" });
   if (senalTexto?.pagina != null) votosPagina.push({ valor: senalTexto.pagina, peso: 0.35, fuente: "texto" });
   if (senalPerfil?.pagina != null) votosPagina.push({ valor: senalPerfil.pagina, peso: 0.2, fuente: "perfil" });
+  if (senalVerpag) votosPagina.push({ valor: senalVerpag.pag, peso: 0.35, fuente: "verpag" });
+  if (senalCivPag != null) votosPagina.push({ valor: senalCivPag, peso: 0.3, fuente: "civ" });
 
   let pagina: 1 | 2 | null = null;
   let confianzaPagina = 0;
@@ -632,9 +808,11 @@ export function clasificarEjemplar(args: {
       // Piso por fuente principal + bonus por acuerdo de otras señales.
       confianzaPagina = senalBarcode?.pagina != null
         ? Math.min(0.99, 0.95 + (peso > 0.5 ? 0.03 : 0))
-        : senalTexto?.pagina != null
+        : senalTexto?.pagina != null || senalVerpag != null
           ? Math.min(0.9, 0.7 + (peso > 0.35 ? 0.15 : 0))
-          : 0.55;
+          : senalCivPag != null
+            ? 0.6
+            : 0.55;
     } else {
       conflictos.push(
         `página contradictoria entre señales: ${votosPagina.map((v) => `${v.fuente}=p${v.valor}`).join(" · ")}`,
@@ -646,6 +824,7 @@ export function clasificarEjemplar(args: {
   const votosTipo: Array<{ valor: TipoEjemplar; peso: number; fuente: string }> = [];
   if (senalBarcode?.tipo != null) votosTipo.push({ valor: senalBarcode.tipo, peso: 0.5, fuente: "barcode" });
   if (senalTexto?.tipo != null) votosTipo.push({ valor: senalTexto.tipo, peso: 0.35, fuente: "texto" });
+  if (senalBannerTipo != null) votosTipo.push({ valor: senalBannerTipo, peso: 0.35, fuente: "banner" });
 
   let tipo: TipoEjemplar | null = null;
   let confianzaTipo = 0;
@@ -656,7 +835,9 @@ export function clasificarEjemplar(args: {
       const peso = votosTipo.reduce((s, v) => s + v.peso, 0);
       confianzaTipo = senalBarcode?.tipo != null
         ? Math.min(0.99, 0.95 + (peso > 0.5 ? 0.03 : 0))
-        : 0.7;
+        : senalBannerTipo != null
+          ? Math.min(0.9, 0.7 + (peso > 0.35 ? 0.15 : 0))
+          : 0.7;
     } else {
       conflictos.push(
         `tipo contradictorio entre señales: ${votosTipo.map((v) => `${v.fuente}=${v.valor}`).join(" · ")}`,
@@ -665,7 +846,11 @@ export function clasificarEjemplar(args: {
   }
 
   if (pagina == null && conflictos.length === 0 && votosPagina.length === 0) {
-    notas.push("sin señales suficientes para determinar la página");
+    notas.push(
+      impresas
+        ? "sin señales suficientes para determinar la página (impresas incluidas)"
+        : "sin señales suficientes para determinar la página",
+    );
   }
 
   return {
@@ -675,6 +860,12 @@ export function clasificarEjemplar(args: {
     confianzaPagina,
     confianzaTipo,
     senales,
+    impresas: {
+      verpag: senalVerpag ? { pag: senalVerpag.pag, de: senalVerpag.de } : null,
+      banner: senalBannerTipo,
+      votoCiv: senalCivPag,
+      barcodeFamilia,
+    },
     conflictos,
     notas,
   };

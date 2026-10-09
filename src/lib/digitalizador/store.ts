@@ -57,6 +57,19 @@ import {
   validarCrucePagina,
 } from "@/lib/scanner/actaParser";
 import { leerSenalesOcr } from "@/lib/scanner/ocr-local";
+import { reconocerPistas } from "@/lib/ocr/motor-ocr";
+import {
+  aprenderCivPorKit,
+  civAPagina,
+  parsearBarcodeImpreso,
+  parsearFooter,
+  restaurarMapaCiv,
+  serializarMapaCiv,
+  tipoDesdeBanner,
+} from "@/lib/ocr/senales-impresas";
+import { registrarTelemetria } from "@/lib/ocr/telemetria";
+import { clasificarEjemplar } from "@/lib/identificacion-acta";
+import { idbGet, idbPut } from "@/lib/idb";
 import {
   feedbackAnomalia,
   feedbackEscaneoOk,
@@ -92,6 +105,13 @@ export interface SenalesLocales {
   textoOcr: string | null;
   /** true → código X ∈ índice (identificación EXACTA O(1)) */
   identificada: boolean;
+  /** [F1.5] Conflicto de señales (barcode↔texto/banner/Civ) para la
+   *  bandeja del supervisor — NUNCA se auto-resuelven */
+  conflictosSenales: string[];
+  /** [F1.5] KIT impreso en el footer (para aprender/consultar Civ) */
+  footerKit: number | null;
+  /** [F1.5] Civ impreso en el footer (página física dentro del kit) */
+  footerCiv: number | null;
   /** Ubicación identificada (si identificada) */
   ubicacion: {
     mesa: string;
@@ -112,10 +132,41 @@ const SENALES_INICIALES: SenalesLocales = {
   totalPaginasOcr: null,
   textoOcr: null,
   identificada: false,
+  conflictosSenales: [],
+  footerKit: null,
+  footerCiv: null,
   ubicacion: null,
   extraccionEnCurso: false,
   extraida: false,
 };
+
+// ── [F1.5] Mapa aprendido Civ→página por kit (persistencia IDB) ──
+// Restauración perezosa (una vez por sesión) + escritura best-effort.
+const STORE_MAPA_CIV = "metricas-batch" as const;
+let mapaCivRestaurado = false;
+async function restaurarMapaCivSiHaceFalta(): Promise<void> {
+  if (mapaCivRestaurado) return;
+  mapaCivRestaurado = true;
+  try {
+    const reg = await idbGet<{ id: string; filas: Parameters<typeof restaurarMapaCiv>[0] }>(
+      STORE_MAPA_CIV,
+      "civ-por-kit",
+    );
+    if (reg?.filas) restaurarMapaCiv(reg.filas);
+  } catch {
+    /* sin IDB: el mapa vive solo en memoria esta sesión */
+  }
+}
+async function persistirMapaCiv(): Promise<void> {
+  try {
+    await idbPut(STORE_MAPA_CIV, {
+      id: "civ-por-kit",
+      filas: serializarMapaCiv(),
+    });
+  } catch {
+    /* sin IDB: el mapa vive solo en memoria esta sesión */
+  }
+}
 
 interface UltimoEnvio {
   actaId: string;
@@ -210,7 +261,7 @@ interface DigitalizadorState {
   }) => void;
 
   // [C-17] Acciones del plan (puesto + señales + cola)
-  extraerSenalesLocales: (imagenProcesada: string) => Promise<void>;
+  extraerSenalesLocales: (imagenProcesada: string, fuenteFullRes?: string) => Promise<void>;
   inicializarServicios: () => Promise<void>;
   iniciarIdentificacionPuesto: () => void;
   cancelarIdentificacionPuesto: () => void;
@@ -766,18 +817,23 @@ export const useDigitalizador = create<DigitalizadorState>((set, get) => ({
    * revisión NUNCA espera a esto (plan §5: UI <200ms). Con guard
    * anti-rerun: una sola vez por captura, sea desde la preview de
    * Revisión o desde finalizarCaptura.
+   * [T2·F1.5] `fuenteFullRes` (opcional): warp de mayor calidad usado
+   * como FUENTE del OCR y de las pistas impresas.
    */
-  extraerSenalesLocales: async (imagenProcesada) => {
+  extraerSenalesLocales: async (imagenProcesada, fuenteFullRes) => {
     const actuales = get().senalesLocales;
     if (actuales.extraida || actuales.extraccionEnCurso) return;
     set({
       senalesLocales: { ...SENALES_INICIALES, extraida: true, extraccionEnCurso: true },
     });
     try {
+      // [F1.5] Restauración perezosa del mapa Civ aprendido (una vez)
+      void restaurarMapaCivSiHaceFalta();
       // 1) QR → huella de deduplicación (32 bytes base64url)
       const qr = await leerQrFingerprint(imagenProcesada);
       // 2) OCR → zona X → código de 7 dígitos → lookup O(1)
-      const ocr = await leerSenalesOcr(imagenProcesada);
+      //    [T2] el OCR consume la mejor fuente disponible (warp full-res)
+      const ocr = await leerSenalesOcr(imagenProcesada, fuenteFullRes);
       const texto = ocr?.textoSuperior ?? null;
       let codigoX =
         extractTransmissionCode(texto ?? "") ??
@@ -823,17 +879,84 @@ export const useDigitalizador = create<DigitalizadorState>((set, get) => ({
 
       // [C-17] TAREA 1.2: barcode15 determinista desde el texto OCR
       const senalesBarcode = extraerBarcode15DeTexto(texto);
+
+      // ── [F1.5 · T4] SEÑALES IMPRESAS BARATAS ─────────────────
+      // Pistas por zona (barcode impreso, footer KIT/Civ, banner
+      // invertido) sobre el MISMO acta; parseo tolerante; votos y
+      // cruces vía clasificarEjemplar. Fallo suave: pista nula.
+      let barcode15Impreso: string | null = null;
+      let pagTexto: number | null = null;
+      let deTexto: number | null = null;
+      let footerKit: number | null = null;
+      let footerCiv: number | null = null;
+      let bannerTipo: "TRANSMISION" | "DELEGADOS" | null = null;
+      try {
+        const pistas = await reconocerPistas(fuenteFullRes || imagenProcesada);
+        if (pistas) {
+          const bi = parsearBarcodeImpreso(pistas.barcodeImpreso);
+          if (bi) {
+            barcode15Impreso = bi.d15;
+            pagTexto = bi.pag ?? null;
+            deTexto = bi.de ?? null;
+          }
+          const ft = parsearFooter(pistas.footer);
+          if (ft) {
+            footerKit = ft.kit;
+            footerCiv = ft.civ;
+          }
+          bannerTipo = tipoDesdeBanner(pistas.banner);
+        }
+      } catch {
+        /* pistas no disponibles: el flujo continúa */
+      }
+      const votoCiv = civAPagina(footerKit, footerCiv);
+      const clasificacion = clasificarEjemplar({
+        textoOcr: texto,
+        barcode15: senalesBarcode?.barcode15 ?? null,
+        impresas: {
+          barcode15Impreso,
+          pagTexto,
+          deTexto,
+          kitImpreso: footerKit,
+          civ: footerCiv,
+          bannerTipo,
+          votoCiv,
+        },
+      });
+      // Aprendizaje Civ→página por kit: la página del barcode15 VÁLIDO
+      // es determinista → el primer escaneo del kit enseña el mapa.
+      if (senalesBarcode && footerKit != null && footerCiv != null) {
+        const pagBc = senalesBarcode.pagina === 2 ? 2 : 1;
+        if (civAPagina(footerKit, footerCiv) !== pagBc) {
+          aprenderCivPorKit(footerKit, footerCiv, pagBc);
+          void persistirMapaCiv();
+        }
+      }
+      // [F0] Telemetría local de la identificación (export JSON)
+      if (codigoX) {
+        registrarTelemetria({
+          fuente: "identificacion",
+          campo: "codigoX",
+          valor: codigoX,
+          confianza: identificada ? 0.99 : 0,
+          ok: identificada,
+          motivo: identificada ? null : "código no identificado en el índice",
+        });
+      }
       set({
         senalesLocales: {
           codigoX,
           qrFingerprint: qr,
           barcode15: senalesBarcode?.barcode15 ?? null,
-          tipoActaOcr: senalesBarcode?.tipoActa ?? null,
-          paginaOcr: senalesBarcode?.pagina ?? null,
-          totalPaginasOcr: senalesBarcode?.totalPaginas ?? null,
+          tipoActaOcr: clasificacion.tipo ?? senalesBarcode?.tipoActa ?? null,
+          paginaOcr: clasificacion.pagina ?? senalesBarcode?.pagina ?? null,
+          totalPaginasOcr: deTexto ?? senalesBarcode?.totalPaginas ?? null,
           textoOcr: texto,
           identificada,
           ubicacion,
+          conflictosSenales: clasificacion.conflictos,
+          footerKit,
+          footerCiv,
           extraccionEnCurso: false,
           extraida: true,
         },
@@ -1081,6 +1204,21 @@ export const useDigitalizador = create<DigitalizadorState>((set, get) => ({
           tipoEjemplar: data.asignacion?.tipoEjemplar ?? payload.tipoEjemplar,
           pagina: data.asignacion?.pagina ?? payload.pagina,
         });
+      }
+      // [F1.5] Enseñar el mapa Civ→página por kit con el envío
+      // CONFIRMADO (página autoritativa: barcode15 válido o confirmación
+      // explícita del operario vía modo manual/advertencia).
+      if (senalesLocales.footerKit != null && senalesLocales.footerCiv != null) {
+        const autoritativa =
+          senalesLocales.barcode15 != null ||
+          payload.modoManual ||
+          payload.envioAdvertencia === true;
+        if (autoritativa && (payload.pagina === 1 || payload.pagina === 2)) {
+          if (civAPagina(senalesLocales.footerKit, senalesLocales.footerCiv) !== payload.pagina) {
+            aprenderCivPorKit(senalesLocales.footerKit, senalesLocales.footerCiv, payload.pagina);
+            void persistirMapaCiv();
+          }
+        }
       }
       // [DISEÑO-STITCH · RN-03] envío resuelto → reintentos en cero
       set({ vista: "exito", reintentosRechazo: 0 });

@@ -7,7 +7,7 @@
 // Estilo "brand dark" (negro + verde #00e676) del diseño de revisión.
 // ============================================================
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -35,6 +35,8 @@ import {
 } from "@/lib/digitalizador/reglas";
 import type { TipoEjemplar } from "@/lib/digitalizador/types";
 import { useDigitalizador } from "@/lib/digitalizador/store";
+import { candidatosRescate, type CandidatoRescate } from "@/lib/identificacion-acta";
+import { obtenerIndiceActas } from "@/lib/integracion-captura";
 
 export default function PantallaContingencia() {
   const captura = useDigitalizador((s) => s.captura);
@@ -124,6 +126,52 @@ export default function PantallaContingencia() {
   const totalEfectivo = parse.ok ? parse.info.totalPaginas : 2;
 
   const puedeEnviar = Boolean(mesaId) && (parse.ok || digits.length === 0);
+
+  // ── [T8] Contingencia asistida: top-3 candidatos del rescate ──
+  // Fuente: código X crudo leído entre las X (senalesLocales) +
+  // encabezado DIVIPOL del OCR de zonas (ocrRuteo). Solo PRELLENA.
+  const ocrRuteoCampos = useDigitalizador((st) => st.ocrRuteo?.campos);
+  const codigoXCrudo = senalesLocales.codigoX;
+  const [candidatos, setCandidatos] = useState<CandidatoRescate[]>([]);
+  const [candidatoSel, setCandidatoSel] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelado = false;
+    void (async () => {
+      try {
+        const indice = await obtenerIndiceActas();
+        if (cancelado) return;
+        const encabezado = ocrRuteoCampos
+          ? {
+              pais: ocrRuteoCampos.municipio?.valor ?? null,
+              zona: ocrRuteoCampos.zona?.valor ?? null,
+              puesto: ocrRuteoCampos.puesto?.valor ?? null,
+              mesa: ocrRuteoCampos.mesa?.valor ?? null,
+            }
+          : null;
+        const lista = candidatosRescate(codigoXCrudo, encabezado, indice, 3);
+        if (!cancelado) setCandidatos(lista);
+      } catch {
+        if (!cancelado) setCandidatos([]);
+      }
+    })();
+    return () => {
+      cancelado = true;
+    };
+  }, [codigoXCrudo, ocrRuteoCampos]);
+
+  /** Un toque: prellena puesto/mesa del candidato (requiere confirmación
+   *  del operario — el envío SIEMPRE pasa por el botón TRANSMITIR). */
+  const aplicarCandidato = (c: CandidatoRescate) => {
+    const codCons = `${c.entrada.consulado.municipio}-${c.entrada.consulado.zona}-${c.entrada.consulado.puesto}`;
+    const cons = consulados.find((cc) => cc.codigo === codCons);
+    const mesaNum = parseInt(String(c.entrada.mesaNumero).replace(/\D/g, ""), 10);
+    const mesa = cons?.mesas.find(
+      (m) => parseInt(String(m.numero).replace(/\D/g, ""), 10) === mesaNum
+    );
+    if (cons) setConsuladoId(cons.id);
+    if (mesa) setMesaId(mesa.id);
+    setCandidatoSel(c.codigo);
+  };
 
   const confirmar = () => {
     if (!mesaId) return;
@@ -244,6 +292,66 @@ export default function PantallaContingencia() {
             >
               <RefreshCcw className="h-3.5 w-3.5" /> REPETIR FOTO
             </Button>
+          </div>
+        )}
+
+        {/* [T8 · plan F5] CONTINGENCIA ASISTIDA: top-3 candidatos del
+            rescate (Hamming-1/2 con encabezado). Confirmación de UN TOQUE:
+            prellena el puesto/mesa del candidato; el operario revisa y
+            transmite — NUNCA se auto-envía (invariante intacto). */}
+        {candidatos.length > 0 && (
+          <div
+            className="rounded-xl border border-brand-500/40 bg-ink-950/95 p-3"
+            data-testid="candidatos-rescate"
+          >
+            <div className="mb-2 flex items-center gap-1.5">
+              <ScanLine className="h-3.5 w-3.5 text-brand-400" />
+              <span className="label-caps text-[10px] font-bold text-brand-400">
+                CANDIDATOS DETECTADOS — CONFIRME CON UN TOQUE
+              </span>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              {candidatos.map((c, i) => {
+                const codCons = `${c.entrada.consulado.municipio}-${c.entrada.consulado.zona}-${c.entrada.consulado.puesto}`;
+                const cons = consulados.find((cc) => cc.codigo === codCons);
+                const seleccionado = candidatoSel === c.codigo;
+                return (
+                  <button
+                    key={`${c.codigo}-${i}`}
+                    type="button"
+                    onClick={() => aplicarCandidato(c)}
+                    className={cn(
+                      "flex w-full items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left transition-colors",
+                      seleccionado
+                        ? "border-brand-500/70 bg-brand-500/15"
+                        : "border-white/10 bg-ink-800 hover:bg-ink-700"
+                    )}
+                  >
+                    <span className="flex min-w-0 flex-col">
+                      <span className="font-mono text-xs font-bold tracking-wider text-white">
+                        {c.codigo}
+                      </span>
+                      <span className="truncate text-[10px] text-zinc-400">
+                        {cons ? `${cons.puesto} (${codCons})` : codCons}
+                        {" · "}
+                        MESA {c.entrada.mesaNumero}
+                        {c.distancia > 0 && ` · ${c.distancia} dígito${c.distancia > 1 ? "s" : ""} corregido${c.distancia > 1 ? "s" : ""}`}
+                      </span>
+                    </span>
+                    <span
+                      className={cn(
+                        "shrink-0 rounded-md border px-2 py-0.5 font-mono text-[10px] font-bold",
+                        seleccionado
+                          ? "border-brand-500/60 bg-brand-500/20 text-brand-300"
+                          : "border-white/10 bg-ink-700 text-zinc-400"
+                      )}
+                    >
+                      {i === 0 ? "MEJOR" : `OPCIÓN ${i + 1}`}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
         )}
 

@@ -16,6 +16,8 @@ import { useEffect, useMemo, useState } from "react";
 import {
   CheckCircle2,
   Database,
+  Download,
+  FileDown,
   Loader2,
   MapPin,
   ScanLine,
@@ -30,6 +32,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { withBasePath } from "@/lib/env";
 import { useDigitalizador } from "@/lib/digitalizador/store";
 import { contarFilasPuesto } from "@/services/puestoStorage";
 import type { PuestoAsignado } from "@/services/puestoStorage";
@@ -202,6 +205,30 @@ export default function PantallaInicio() {
             )}
           />
         </div>
+
+        {/* ── ENTREGA DEL CÓDIGO FUENTE (zip con el proyecto completo) ──
+            El zip se genera al cerrar cada sesión de trabajo y vive en
+            public/: sobrevive a reinicios de sesión y permite revisar/
+            subir a GitHub desde cualquier equipo. */}
+        <a
+          href={withBasePath("/proyecto-fuente-digielect.zip")}
+          download
+          data-testid="descarga-fuente-proyecto"
+          className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-ind-outline-variant bg-ind-lowest px-3 py-2.5 transition-colors hover:bg-ind-high"
+        >
+          <span className="flex min-w-0 items-center gap-2.5">
+            <FileDown className="h-4 w-4 shrink-0 text-brand-500" />
+            <span className="min-w-0">
+              <span className="label-caps block text-[10px] text-ind-on-surface-var">
+                FUENTE COMPLETA DEL PROYECTO
+              </span>
+              <span className="data-mono block text-[11px] text-ind-on-surface">
+                descargar .zip (analizar / subir al repo)
+              </span>
+            </span>
+          </span>
+          <Download className="h-4 w-4 shrink-0 text-ind-primary" />
+        </a>
       </div>
 
       {/* ===== SELECTOR MANUAL DE PUESTO (OPCIÓN B) ===== */}

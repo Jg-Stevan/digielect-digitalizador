@@ -58,6 +58,7 @@ import {
 import { ZONAS_RUTEO_E14 } from "@/lib/ocr/zonas-e14";
 import { reconocerZonasRuteo } from "@/lib/ocr/motor-ocr";
 import { resolverRuteo, type ResultadoRuteo } from "@/lib/ocr/ruteo";
+import { registrarTelemetria } from "@/lib/ocr/telemetria";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -154,6 +155,18 @@ export default function PantallaRevision() {
           campos,
           useDigitalizador.getState().consulados
         );
+        // [F0] Telemetría local por campo (export JSON para calibración)
+        for (const z of ZONAS_RUTEO_E14) {
+          const c = campos[z.id];
+          registrarTelemetria({
+            fuente: "ruteo",
+            campo: z.id,
+            valor: c?.valor ?? null,
+            confianza: c?.confianza ?? 0,
+            ok: Boolean(c?.valor && !rr.campoFallido) || (c?.valor ? rr.campoFallido !== z.id : false),
+            motivo: rr.campoFallido === z.id ? rr.motivo : null,
+          });
+        }
         if (cancelado) return;
         setOcrRuteo(
           {
