@@ -237,3 +237,19 @@ TABLA ANTES/DESPUÉS (FASE 2):
 (* el resuelto antes de T12 existía implícitamente con los mismos fallos: el difuso podía incluso enrutar MAL)
 
 Stage Summary (cierre Fase 2): ver arriba.
+
+---
+Task ID: 10 (push + PR #10 + CI verde)
+Agent: Z.ai Code (GLM)
+Task: Push de feat/fase-2-t9-t13, PR #10 y verificación de CI
+
+Work Log:
+- Push de feat/fase-2-t9-t13 (T9-T13, 7 commits) → PR #10 (https://github.com/Jg-Stevan/digielect-digitalizador/pull/10) con tabla antes/después.
+- Token usado por URL efímera en el push; .git/config limpiado (remote sin credenciales, 0 tokens persistidos).
+- CI 1er run FALLO en el paso golden OCR: "Execution context was destroyed, most likely because of a navigation" — FLAKY de infraestructura medido: el SW de la PWA recarga la página al activarse y en el runner lento el reload cayó EN MEDIO de un page.evaluate. Las métricas del CI eran IDÉNTICAS a local (41/60 crudo · 46/60 resuelto; 12/13 passed).
+- FIX: conReintento() en tests/ocr-golden.spec.mjs — reintento único re-navegando y re-precalentando el worker ante ese error concreto (commit 73039c1).
+- CI 2º run VERDE (run 37885230426): lint · tsc · contract · build · motor golden 4/4 · Golden OCR medición 13/13 con banner 4/4 y ambas tablas en el log (41/60 crudo · 46/60 resuelto).
+- Nota: la "corrupción ci.yml" reportada al inicio de la sesión era un artefacto de renderizado (el literal "[m" se procesa como ANSI) — el trigger siempre fue `branches: [main]`; sin cambios.
+
+Stage Summary:
+- FASE 2 COMPLETA, PUSHED y con CI VERDE en PR #10 (pendiente de merge por el operador). El gate GOLDEN_STRICT queda apagado por decisión honesta (46/60 < 48/60), con la ruta a 80% documentada en T13.
