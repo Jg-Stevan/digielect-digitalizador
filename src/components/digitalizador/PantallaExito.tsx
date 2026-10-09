@@ -34,6 +34,35 @@ import {
 } from "@/lib/digitalizador/reglas";
 import type { Banda } from "@/lib/digitalizador/types";
 import { useDigitalizador } from "@/lib/digitalizador/store";
+import {
+  conflictoMesaEnviada,
+  conflictoPuestoActivo,
+  resolverGrupoLeido,
+} from "@/lib/digitalizador/info-acta";
+
+/** Campo del panel de información (mono, valor honesto "—" S-11). */
+function InfoCampo({
+  testid,
+  label,
+  valor,
+}: {
+  testid: string;
+  label: string;
+  valor: string | number | null | undefined;
+}) {
+  const texto =
+    valor != null && String(valor).trim() !== "" ? String(valor) : "—";
+  return (
+    <div className="min-w-0">
+      <dt className="font-mono text-[8px] font-bold uppercase tracking-widest text-zinc-500">
+        {label}
+      </dt>
+      <dd data-testid={testid} className="data-mono truncate text-[13px] font-bold text-white">
+        {texto}
+      </dd>
+    </div>
+  );
+}
 
 export default function PantallaExito() {
   const ultimoEnvio = useDigitalizador((s) => s.ultimoEnvio);
@@ -46,6 +75,9 @@ export default function PantallaExito() {
   const consulados = useDigitalizador((s) => s.consulados);
   const contexto = useDigitalizador((s) => s.contexto);
   const siguienteObjetivo = useDigitalizador((s) => s.siguienteObjetivo);
+  // [T15] Ruteo resuelto del OCR de zonas (resolverRuteo corrió en la
+  // revisión): valores + estado + motivo de lo LEÍDO del encabezado.
+  const ocrRuteo = useDigitalizador((s) => s.ocrRuteo);
 
   // [PANTALLA COMPLETA] visor del acta DIGITALIZADA (la imagen real
   // escaneada y procesada — recorte + B/N — que viajó al servidor).
@@ -88,26 +120,32 @@ export default function PantallaExito() {
         : "ENVÍO RECHAZADO — REPETIR";
 
   // ----------------------------------------------------------
-  // Datos del documento: prioridad señal determinista local
-  // (identificación O(1) → consulado del proyecto) → VLM → puesto
-  // asignado. Nunca inventar. El VLM SOLO completa lo que la
-  // identificación determinista no resolvió: su lectura del
-  // encabezado DIVIPOL puede equivocarse (p.ej. leyó "EGIPTO" en un
-  // acta de ITALIA) — el dato del proyecto identificado por código
-  // SIEMPRE manda, y así el diseño muestra el acta escaneada tal
-  // cual es en la base real (país, ciudad, zona, puesto, mesa).
+  // [T15] Información LEÍDA del acta real: prioridad por señal de
+  // lectura — identificación determinista (código X → índice O(1))
+  // → RUTEO RESUELTO del OCR de zonas (resolverRuteo contra el
+  // catálogo — antes ignorado: hueco a) → VLM → puesto activo
+  // seleccionado (último recurso de presentación). Grupo completo
+  // por fuente: JAMÁS se mezclan valores de fuentes distintas en
+  // una misma fila. Lo no leído se muestra "—" (S-11). Nunca inventar.
   // ----------------------------------------------------------
   const barcodeBruto = senalesLocales.barcode15 ?? analisis?.barcode ?? null;
   const parseado = parseBarcode15(barcodeBruto);
-  const ubic = senalesLocales.ubicacion;
+
+  const leido = resolverGrupoLeido({
+    senalesLocales,
+    ocrRuteo,
+    analisis,
+    consulados,
+  });
 
   const consulado =
-    consulados.find((c) => c.id === ubic?.consuladoId) ??
+    consulados.find((c) => c.id === leido?.consuladoId) ??
+    (leido?.codigo ? consulados.find((c) => c.codigo === leido.codigo) : null) ??
     consulados.find((c) => c.id === puestoActivo?.consuladoId) ??
     null;
 
   const mesaNumero =
-    (ubic?.mesa ? String(ubic.mesa).replace(/\D/g, "") : null) ??
+    leido?.mesa ??
     (mesa ? mesa.replace(/\D/g, "") : null) ??
     analisis?.divipol?.mesa ??
     // [ACOPLE] Captura dirigida sin OCR: la mesa del objetivo dirigido
@@ -121,19 +159,12 @@ export default function PantallaExito() {
       : null) ??
     null;
 
-  // [DETERMINISTA PRIMERO] Zona del consulado identificado en la base
-  // (ej. 495-10-02 → zona 10); el VLM solo completa si no hay consulado.
-  const zona =
-    consulado?.zona?.trim() ||
-    analisis?.divipol?.zona ||
-    (ubic?.consulado ? (ubic.consulado.split("·")[2] ?? null) : null) ||
-    null;
+  // [hueco a] ZONA/PUESTO del grupo LEÍDO (identificación → ruteo
+  // resuelto → VLM); la selección solo cierra la fila si nada se leyó.
+  const zona = leido?.zona ?? consulado?.zona?.trim() ?? null;
 
   const puestoCodigo =
-    consulado?.puesto.match(/^(\d+)/)?.[1] ??
-    analisis?.divipol?.puesto ??
-    (ubic?.consulado ? (ubic.consulado.split("·")[3] ?? null) : null) ??
-    null;
+    leido?.puesto ?? consulado?.puesto.match(/^(\d+)/)?.[1] ?? null;
 
   // [DETERMINISTA PRIMERO] MUN = ciudad del consulado identificado
   // (mockup del diseño: "MUN: ROMA"); el país del consulado y luego
@@ -147,13 +178,34 @@ export default function PantallaExito() {
 
   const nombrePuesto = consulado?.puesto ?? puestoActivo?.puesto ?? null;
 
-  const tipo = parseado.ok
-    ? parseado.tipoEjemplar
-    : (tipoEjemplar as string | undefined) ?? null;
+  // [hueco b] KIT: footer impreso (4/4 en el golden) → dígitos 3-8
+  // del barcode15 parseado. NUNCA hardcode.
+  const kit =
+    senalesLocales.footerKit ?? (parseado.ok ? Number(parseado.info.kit) : null);
 
-  // [S-11 honestidad] Total de páginas: barcode15 parseado → null
-  // ("—"); JAMÁS se inventa el dígito que no se leyó.
-  const totalPaginas = parseado.ok ? parseado.info.totalPaginas : null;
+  // [hueco c] totalPaginas: barcode15 parseado → señal impresa
+  // Ver/Pag del acta → null ("—"). JAMÁS se inventa el dígito.
+  const totalPaginas = parseado.ok
+    ? parseado.info.totalPaginas
+    : senalesLocales.totalPaginasOcr ?? null;
+
+  // [hueco d] tipoEjemplar: barcode15 parseado → prop del envío →
+  // clasificación local (tipoActaOcr, integra votos) → BANNER impreso
+  // (tercera fuente).
+  const tipo =
+    (parseado.ok ? parseado.tipoEjemplar : null) ??
+    (tipoEjemplar ? String(tipoEjemplar) : null) ??
+    senalesLocales.tipoActaOcr ??
+    senalesLocales.bannerTipo ??
+    null;
+
+  // [huecos a+e] ADVERTENCIA visible: lo LEÍDO (determinista)
+  // contradice el consulado/mesa ACTIVO. Sin mezclar valores, sin
+  // auto-enviar nada: solo el aviso al operario.
+  const conflictoPuesto = conflictoPuestoActivo(leido, puestoActivo);
+  const conflictoMesa = conflictoPuesto
+    ? null
+    : conflictoMesaEnviada(leido, mesa);
 
   const rutaRapida = [
     consulado?.pais ?? mun,
@@ -275,6 +327,36 @@ export default function PantallaExito() {
           )}
         </div>
 
+        {/* ===== [T15 · huecos a+e] ADVERTENCIA de conflicto ===== */}
+        {/* Lo LEÍDO (determinista) contradice el consulado/mesa ACTIVO:
+            aviso visible, sin mezclar valores, sin auto-enviar nada. */}
+        {conflictoPuesto && (
+          <div
+            data-testid="aviso-conflicto-puesto"
+            role="alert"
+            className="flex w-full items-center gap-2.5 rounded-xl border border-warning/40 bg-warning/10 p-2.5 text-left shadow-lg shadow-black/40"
+          >
+            <ShieldAlert className="h-5 w-5 shrink-0 text-warning" aria-hidden="true" />
+            <p className="min-w-0 flex-1 text-[11px] font-bold leading-snug text-warning">
+              EL ACTA CORRESPONDE A OTRO PUESTO: LEÍDO {conflictoPuesto.leido} VS
+              SELECCIONADO {conflictoPuesto.seleccionado}
+            </p>
+          </div>
+        )}
+        {conflictoMesa && !conflictoPuesto && (
+          <div
+            data-testid="aviso-conflicto-mesa"
+            role="alert"
+            className="flex w-full items-center gap-2.5 rounded-xl border border-warning/40 bg-warning/10 p-2.5 text-left shadow-lg shadow-black/40"
+          >
+            <ShieldAlert className="h-5 w-5 shrink-0 text-warning" aria-hidden="true" />
+            <p className="min-w-0 flex-1 text-[11px] font-bold leading-snug text-warning">
+              EL ACTA CORRESPONDE A OTRA MESA: LEÍDO {conflictoMesa.leido} VS
+              SELECCIONADA {conflictoMesa.seleccionado}
+            </p>
+          </div>
+        )}
+
         {/* [OLA4 4.6] SIGUIENTE OBJETIVO (captura dirigida) */}
         {siguienteObjetivo && !esRechazado && (
           <div
@@ -334,6 +416,75 @@ export default function PantallaExito() {
                 </div>
               )}
             </figure>
+          </div>
+        </div>
+
+        {/* ===== [T15] PANEL DE INFORMACIÓN — lo LEÍDO del acta REAL ===== */}
+        {/* Campos de información del diseño: ruteo resuelto (zona/puesto/
+            mesa), KIT, página y tipo de ejemplar. Honestidad S-11: lo no
+            leído se muestra "—" — JAMÁS se inventa. */}
+        <div
+          data-testid="panel-info-acta"
+          className="mx-auto w-full max-w-[360px] rounded-xl border border-white/10 bg-zinc-950/90 p-3"
+        >
+          <p className="label-caps mb-2 flex items-center gap-1.5 text-zinc-400">
+            <ScanLine className="h-3 w-3" aria-hidden="true" />
+            Información leída del acta
+          </p>
+          <dl className="grid grid-cols-3 gap-x-2 gap-y-2.5">
+            <InfoCampo testid="info-zona" label="Zona" valor={zona} />
+            <InfoCampo testid="info-puesto" label="Puesto" valor={puestoCodigo} />
+            <InfoCampo testid="info-mesa" label="Mesa" valor={mesaNumero} />
+            <InfoCampo testid="info-kit" label="Kit" valor={kit} />
+            <InfoCampo
+              testid="info-pag"
+              label="Página"
+              valor={
+                parseado.ok || senalesLocales.paginaOcr != null
+                  ? `PÁG ${parseado.ok ? parseado.info.pagina : senalesLocales.paginaOcr} DE ${totalPaginas ?? "—"}`
+                  : null
+              }
+            />
+            <InfoCampo
+              testid="info-tipo"
+              label="Formulario"
+              valor={
+                tipo === "TRANSMISION"
+                  ? "TRANSMISIÓN"
+                  : tipo === "DELEGADOS"
+                    ? "DELEGADOS"
+                    : tipo
+              }
+            />
+          </dl>
+          <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+            {/* [T15 · pto 6] Firmas: presencia detectada (VLM) — chip de
+                estado; el trazo simulado se eliminó con ActaDocumento. */}
+            <span
+              data-testid="chip-firmas"
+              className={cn(
+                "data-mono rounded border px-2 py-0.5 text-[9px] font-bold",
+                analisis?.firmasDetectadas
+                  ? "border-brand-500/40 bg-brand-500/10 text-brand-400"
+                  : "border-zinc-700 bg-zinc-900 text-zinc-400"
+              )}
+            >
+              FIRMAS: {analisis?.firmasDetectadas ? "DETECTADAS ✓" : "—"}
+            </span>
+            {/* [hueco a] Estado del ruteo OCR (valores + estado + motivo) */}
+            <span
+              data-testid="chip-ruteo"
+              className="data-mono rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[9px] font-bold text-zinc-400"
+              title={
+                ocrRuteo
+                  ? ocrRuteo.mesaIdSugerido
+                    ? "Ruteo del encabezado DIVIPOL resuelto contra el catálogo local"
+                    : "Ruteo del encabezado DIVIPOL sin match (el servidor valida)"
+                  : "Sin OCR de ruteo para esta captura"
+              }
+            >
+              RUTEO OCR: {ocrRuteo?.mesaIdSugerido ? "LEÍDO ✓" : "—"}
+            </span>
           </div>
         </div>
 

@@ -58,6 +58,11 @@ import {
 import { ZONAS_RUTEO_E14 } from "@/lib/ocr/zonas-e14";
 import { reconocerZonasRuteo } from "@/lib/ocr/motor-ocr";
 import { resolverRuteo, type ResultadoRuteo } from "@/lib/ocr/ruteo";
+// [FASE-3 · T15] Grupo LEÍDO del acta (identificación → ruteo → VLM)
+import {
+  conflictoPuestoActivo,
+  resolverGrupoLeido,
+} from "@/lib/digitalizador/info-acta";
 import { registrarTelemetria } from "@/lib/ocr/telemetria";
 import {
   AlertDialog,
@@ -98,6 +103,9 @@ export default function PantallaRevision() {
   const enviando = useDigitalizador((s) => s.enviando);
   const contexto = useDigitalizador((s) => s.contexto);
   const consulados = useDigitalizador((s) => s.consulados);
+  // [T15] Puesto activo (selección del operario) para el aviso de
+  // conflicto leído vs seleccionado (hueco e).
+  const puestoActivo = useDigitalizador((s) => s.puestoActivo);
   const setRotacion = useDigitalizador((s) => s.setRotacion);
   const setQuad = useDigitalizador((s) => s.setQuad);
   const setCalidadFoto = useDigitalizador((s) => s.setCalidadFoto);
@@ -362,6 +370,8 @@ export default function PantallaRevision() {
   };
 
   const senalesLocales = useDigitalizador((s) => s.senalesLocales);
+  // [T15] Ruteo resuelto (reactivo) para la tarjeta de información.
+  const ocrRuteo = useDigitalizador((s) => s.ocrRuteo);
   // [C-17] PLAN: el barcode15 determinista del OCR local manda sobre
   // el del VLM (misma señal, cero latencia de red, funciona offline).
   const barcodeBruto = senalesLocales.barcode15 ?? analisis?.barcode ?? null;
@@ -736,17 +746,37 @@ export default function PantallaRevision() {
   // ----------------------------------------------------------
   // Datos derivados SOLO para presentación (bandas ámbar/roja)
   // ----------------------------------------------------------
-  const pagConocida = parseado.ok ? parseado.info.pagina : contexto?.pagina ?? null;
+  // [T15] GRUPO LEÍDO: identificación determinista → ruteo resuelto
+  // del OCR de zonas → VLM. Pinta la ruta de la tarjeta ANTES que
+  // la selección/objetivo (hueco a) y alimenta el aviso de conflicto.
+  const leido = resolverGrupoLeido({
+    senalesLocales,
+    ocrRuteo,
+    analisis,
+    consulados,
+  });
+  const conflictoSeleccion = conflictoPuestoActivo(leido, puestoActivo);
+  const pagConocida = parseado.ok ? parseado.info.pagina : senalesLocales.paginaOcr ?? contexto?.pagina ?? null;
   const totalConocido = parseado.ok
     ? parseado.info.totalPaginas
-    : analisis?.totalPaginasLeidas ?? null;
+    : analisis?.totalPaginasLeidas ?? senalesLocales.totalPaginasOcr ?? null;
   const tipoActual = parseado.ok
     ? parseado.tipoEjemplar
-    : contexto?.tipoEjemplar ?? null;
+    : (contexto?.tipoEjemplar ?? senalesLocales.tipoActaOcr ?? senalesLocales.bannerTipo ?? null);
 
   const tituloTarjeta = mesaObjetivo
     ? `MESA ${String(mesaObjetivo.numero).padStart(2, "0")} · ${contexto?.tipoEjemplar ?? ""} P${contexto?.pagina ?? 1}`
     : (() => {
+        // [T15] Título del grupo LEÍDO primero (identificación/ruteo):
+        // el consulado real del acta escaneada, no la selección.
+        if (leido) {
+          const cLeido =
+            consulados.find((c) => c.id === leido.consuladoId) ??
+            (leido.codigo ? consulados.find((c) => c.codigo === leido.codigo) : null) ??
+            null;
+          const nombreLeido = cLeido?.puesto || cLeido?.ciudad;
+          if (nombreLeido) return String(nombreLeido).toUpperCase();
+        }
         // [OLA4 4.9] tolerante a las dos formas del contrato: el servidor
         // manda {consulado, municipio, pais, ciudad} — en el exterior
         // pais=municipio (país) y ciudad=consulado (ciudad sede).
@@ -761,6 +791,26 @@ export default function PantallaRevision() {
   const rutaTarjeta = (() => {
     const pag = pagConocida ?? 1;
     const total = totalConocido ?? 2;
+    // [T15 · hueco a] GRUPO LEÍDO primero: identificación determinista
+    // (código X → índice) o ruteo resuelto del OCR de zonas contra el
+    // catálogo. La selección/objetivo solo pinta si nada se leyó.
+    if (leido) {
+      const cLeido =
+        consulados.find((c) => c.id === leido.consuladoId) ??
+        (leido.codigo ? consulados.find((c) => c.codigo === leido.codigo) : null) ??
+        null;
+      return [
+        cLeido?.pais || cLeido?.ciudad,
+        leido.zona ? `ZONA ${leido.zona}` : null,
+        leido.puesto ? `PUESTO ${leido.puesto}` : null,
+        leido.mesa ? `MESA ${String(leido.mesa).padStart(3, "0")}` : null,
+        tipoActual,
+        `PÁG ${pag} DE ${total}`,
+      ]
+        .filter(Boolean)
+        .join(" > ")
+        .toUpperCase();
+    }
     if (puestoObjetivo && mesaObjetivo) {
       return [
         puestoObjetivo.pais || puestoObjetivo.ciudad,
@@ -950,6 +1000,18 @@ export default function PantallaRevision() {
                   </span>
                 </div>
                 {/* Fila 2: ruta mono del acta */}
+                {/* [T15 · hueco e] ADVERTENCIA: lo LEÍDO contradice el
+                    puesto ACTIVO — aviso visible sin mezclar valores. */}
+                {conflictoSeleccion && (
+                  <p
+                    data-testid="aviso-conflicto-puesto"
+                    className="flex items-center gap-1.5 font-mono text-[9px] font-bold text-warning"
+                  >
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    EL ACTA CORRESPONDE A OTRO PUESTO: LEÍDO {conflictoSeleccion.leido} VS
+                    SELECCIONADO {conflictoSeleccion.seleccionado}
+                  </p>
+                )}
                 {rutaTarjeta ? (
                   <p
                     className={cn(
@@ -996,14 +1058,16 @@ export default function PantallaRevision() {
                         {senalesLocales.qrFingerprint ? " · QR✓" : ""}
                       </span>
                     )}
-                    {/* [4.7] Kit del barcode15 (parser canónico) — dato
-                        adicional para cotejar contra la hoja física */}
-                    {parseado.ok && (
+                    {/* [4.7] Kit del barcode15 (parser canónico) o del
+                        footer impreso (T15: señal 4/4 en el golden) —
+                        dato adicional para cotejar contra la hoja física */}
+                    {(parseado.ok || senalesLocales.footerKit != null) && (
                       <span
+                        data-testid="chip-kit"
                         className="data-mono rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[9px] font-bold text-neutral-300"
-                        title={`Kit ${parseado.info.kit} · elección ${parseado.info.eleccion} · versión ${parseado.info.version}`}
+                        title={`Kit ${senalesLocales.footerKit ?? (parseado.ok ? Number(parseado.info.kit) : null) ?? "—"}${parseado.ok ? ` · elección ${parseado.info.eleccion} · versión ${parseado.info.version}` : " (footer impreso)"}`}
                       >
-                        KIT {parseado.info.kit}
+                        KIT {senalesLocales.footerKit ?? (parseado.ok ? Number(parseado.info.kit) : null)}
                       </span>
                     )}
                     <span className="data-mono rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[9px] font-bold text-neutral-300">

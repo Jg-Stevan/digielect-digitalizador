@@ -112,6 +112,10 @@ export interface SenalesLocales {
   footerKit: number | null;
   /** [F1.5] Civ impreso en el footer (página física dentro del kit) */
   footerCiv: number | null;
+  /** [FASE-3 · T15] Banner impreso leído (TERCERA fuente del tipo de
+   *  ejemplar cuando barcode15 y prop del envío no resuelven — la
+   *  señal que el plan T4/T11 hizo viable). Fail-soft: null. */
+  bannerTipo: "TRANSMISION" | "DELEGADOS" | null;
   /** Ubicación identificada (si identificada) */
   ubicacion: {
     mesa: string;
@@ -135,6 +139,7 @@ const SENALES_INICIALES: SenalesLocales = {
   conflictosSenales: [],
   footerKit: null,
   footerCiv: null,
+  bannerTipo: null,
   ubicacion: null,
   extraccionEnCurso: false,
   extraida: false,
@@ -957,6 +962,7 @@ export const useDigitalizador = create<DigitalizadorState>((set, get) => ({
           conflictosSenales: clasificacion.conflictos,
           footerKit,
           footerCiv,
+          bannerTipo,
           extraccionEnCurso: false,
           extraida: true,
         },
