@@ -161,6 +161,52 @@ function liberarCanvas(c: HTMLCanvasElement): void {
   c.height = 0;
 }
 
+/**
+ * [T10] Codifica el bitmap del warp a dataURL JPEG q0.92 (lado mayor
+ * capado a 3200 px) con la MISMA rotación local que el resultado
+ * (las zonas calibradas del OCR asumen la orientación final del acta).
+ * Es la fuente de máxima calidad para el OCR del dispositivo: sin
+ * filtro de realce y con UNA sola compresión. Falla suave: undefined.
+ */
+async function dataUrlWarpFullRes(
+  bitmap: ImageBitmap | HTMLImageElement,
+  rotacion: number
+): Promise<string | undefined> {
+  try {
+    const bw = bitmap.width;
+    const bh = bitmap.height;
+    const lado = Math.max(bw, bh);
+    const escala = lado > CAP_PROCESADO ? CAP_PROCESADO / lado : 1;
+    const rot = rotacion % 360;
+    const intercambia = rot === 90 || rot === 270;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(16, Math.round((intercambia ? bh : bw) * escala));
+    canvas.height = Math.max(16, Math.round((intercambia ? bw : bh) * escala));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      liberarCanvas(canvas);
+      return undefined;
+    }
+    ctx.imageSmoothingQuality = "high";
+    ctx.save();
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.rotate((rot * Math.PI) / 180);
+    ctx.drawImage(
+      bitmap as CanvasImageSource,
+      (-bw * escala) / 2,
+      (-bh * escala) / 2,
+      bw * escala,
+      bh * escala
+    );
+    ctx.restore();
+    const url = canvas.toDataURL("image/jpeg", 0.92);
+    liberarCanvas(canvas);
+    return url || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // ------------------------------------------------------------
 // API pública
 // ------------------------------------------------------------
@@ -221,7 +267,7 @@ export async function procesarPagina(opts: {
   rotacion: 0 | 90 | 180 | 270;
   manual: boolean;
   preview?: boolean;
-}): Promise<ResultadoProceso> {
+}): Promise<ResultadoProceso & { warpFullRes?: string }> {
   const { originalUrl, quad, filtro, rotacion, manual, preview } = opts;
   const cap = preview ? CAP_PREVIEW : CAP_PROCESADO;
   const d = await decodificar(originalUrl);
@@ -230,6 +276,8 @@ export async function procesarPagina(opts: {
   let wOut = d.w;
   let hOut = d.h;
   let bitmapFinal: ImageBitmap | HTMLImageElement | null = null;
+  // [T10] dataURL del warp full-res (fuente del OCR y de las pistas)
+  let warpFullRes: string | undefined;
 
   if (scannerAdapter.disponible) {
     try {
@@ -253,6 +301,12 @@ export async function procesarPagina(opts: {
           await new Promise((res) => setTimeout(res, 250 * (intento + 1)));
         }
       }
+      // [T10] dataURL del warp ANTES del realce: el worker puede
+      // transferir/neutrar el bitmap al realzar (postMessage transfer).
+      // Sin filtro y con una sola compresión — mejor fuente para el OCR.
+      if (!warpFullRes) {
+        warpFullRes = await dataUrlWarpFullRes(warped!.bitmap, rotacion);
+      }
       // 2) realce/filtro sobre el bitmap warpado (modo del motor nuevo)
       const realzado = await scannerAdapter.realzar(warped!.bitmap, mapFilter(filtro), cap);
       // 3) decodificar el blob realzado para pintarlo + rotarlo LOCAL
@@ -270,6 +324,9 @@ export async function procesarPagina(opts: {
     bitmapFinal = await bitmapDesdeRgba(r.rgba, r.w, r.h);
     wOut = r.w;
     hOut = r.h;
+    // [T10] fallback: codificar igual desde su bitmap (mismo trato que
+    // la vía del worker — el OCR consume la mejor fuente disponible).
+    warpFullRes = warpFullRes ?? (await dataUrlWarpFullRes(bitmapFinal, rotacion));
   }
 
   // Pintar resultado + rotación LOCAL (el worker NO rota)
@@ -325,7 +382,14 @@ export async function procesarPagina(opts: {
   } catch {
     // calidad por defecto (ya inicializada)
   }
-  return { dataUrl, w: canvas.width, h: canvas.height, calidad, fullFrame: false };
+  return {
+    dataUrl,
+    w: canvas.width,
+    h: canvas.height,
+    calidad,
+    fullFrame: false,
+    warpFullRes,
+  };
 }
 
 /** RGBA crudo (fallback) → bitmap pintable sin codificar de más. */

@@ -22,6 +22,9 @@ import {
 } from "@/lib/identificacion-acta";
 import { parsearBarcodeImpreso, parsearFooter, tipoDesdeBanner } from "@/lib/ocr/senales-impresas";
 import { clasificarConCatalogo } from "@/lib/ocr/ruteo-catalogo";
+// [T10] espejo de solo lectura del pipeline REAL de procesamiento
+// (evidencia del cableado warpFullRes en tests/warp-fullres.spec.mjs)
+import { procesarPagina } from "@/lib/digitalizador/escaner";
 
 if (typeof window !== "undefined") {
   (window as unknown as Record<string, unknown>).__digielectOcrGolden = {
@@ -37,6 +40,7 @@ if (typeof window !== "undefined") {
     parsearBarcodeImpreso,
     parsearFooter,
     tipoDesdeBanner,
+    procesarPagina,
     ZONAS_RUTEO_E14,
     ZONAS_PISTAS_E14,
   };

@@ -80,6 +80,8 @@ interface EntradaCache {
   w: number;
   h: number;
   calidad: CalidadWarp;
+  /** [T10] warp full-res (fuente del OCR) — efímero, se limpia tras extraer */
+  warpFullRes?: string | null;
 }
 
 const CSS_FILTROS: Record<FiltroPagina, string> = {
@@ -254,8 +256,10 @@ export default function PantallaRevision() {
       setProcesada(hit);
       setPreview(hit.dataUrl);
       setProcesandoPreview(false);
-      // [C-17] guard del store evita reruns
-      void useDigitalizador.getState().extraerSenalesLocales(hit.dataUrl);
+      // [C-17] guard del store evita reruns · [T10] warp full-res como fuente
+      void useDigitalizador
+        .getState()
+        .extraerSenalesLocales(hit.dataUrl, hit.warpFullRes ?? undefined);
       return;
     }
     // cache-miss: limpiar ANTES de procesar (evita previews stale)
@@ -279,6 +283,7 @@ export default function PantallaRevision() {
           w: r.w,
           h: r.h,
           calidad: r.calidad,
+          warpFullRes: r.warpFullRes ?? null,
         };
         cache.set(clave, entrada);
         if (cache.size > 12) {
@@ -290,7 +295,20 @@ export default function PantallaRevision() {
         // [C-17] PLAN TAREA 1: la preview PROCESADA (recorte + B/N) es
         // la entrada del OCR/QR determinista. Fire-and-forget con guard
         // en el store — el operario nunca espera a esto.
-        void useDigitalizador.getState().extraerSenalesLocales(entrada.dataUrl);
+        // [T10] el OCR consume el warp full-res (mejor fuente).
+        void useDigitalizador
+          .getState()
+          .extraerSenalesLocales(entrada.dataUrl, entrada.warpFullRes ?? undefined)
+          .then(() => {
+            // [T10] Memoria: liberar el dataURL full-res tras la
+            // extracción (son ~0.3–2 MB; el guard C-17 evita reruns).
+            const e = cache.get(clave);
+            if (e && e.warpFullRes) {
+              const liberada: EntradaCache = { ...e, warpFullRes: null };
+              cache.set(clave, liberada);
+              setProcesada((p) => (p === e ? liberada : p));
+            }
+          });
       } catch {
         if (!cancelado) setPreview(ed.original); // degradar: mostrar original
       } finally {
@@ -415,10 +433,13 @@ export default function PantallaRevision() {
       });
       let imagen: string;
       let metricas: CalidadWarp;
+      let warpFullRes: string | null = null;
       const enCache = claveActual === clave && procesada;
       if (enCache) {
         imagen = procesada.dataUrl;
         metricas = procesada.calidad;
+        // [T10] reutilizar el warp full-res del cache si sigue vivo
+        warpFullRes = procesada.warpFullRes ?? null;
       } else {
         const r = await procesarPagina({
           originalUrl: ed.original,
@@ -430,6 +451,7 @@ export default function PantallaRevision() {
         });
         imagen = r.dataUrl;
         metricas = r.calidad;
+        warpFullRes = r.warpFullRes ?? null;
       }
       finalizarCaptura({
         imagenDataUrl: imagen,
@@ -438,6 +460,7 @@ export default function PantallaRevision() {
         qrTexto: null,
         origen: ed.origen,
         createdAt: ed.createdAt,
+        warpFullRes,
       });
       return true;
     } catch {

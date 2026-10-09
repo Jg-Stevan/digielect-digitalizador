@@ -802,7 +802,8 @@ export const useDigitalizador = create<DigitalizadorState>((set, get) => ({
     set({ captura: c });
     // [C-17] La extracción determinista corre por su cuenta (ver
     // extraerSenalesLocales); aquí solo garantizamos que arranque.
-    void get().extraerSenalesLocales(c.imagenDataUrl);
+    // [T10] el OCR y las pistas consumen el warp full-res si llegó.
+    void get().extraerSenalesLocales(c.imagenDataUrl, c.warpFullRes ?? undefined);
   },
 
   // [FASE-5] Sugerencia de ruteo por OCR de zonas (solo impresos).
@@ -1002,6 +1003,15 @@ export const useDigitalizador = create<DigitalizadorState>((set, get) => ({
       set({
         senalesLocales: { ...SENALES_INICIALES, extraida: true },
       });
+    } finally {
+      // [T10] Memoria: el dataURL full-res (~0.3–2 MB) ya cumplió su
+      // función (OCR de zonas + pistas impresas). El guard C-17 evita
+      // reruns, así que nadie lo vuelve a pedir. Nada persistente en
+      // IndexedDB (la captura que se envía es imagenDataUrl).
+      const capturaConFull = get().captura;
+      if (capturaConFull?.warpFullRes) {
+        set({ captura: { ...capturaConFull, warpFullRes: null } });
+      }
     }
   },
 

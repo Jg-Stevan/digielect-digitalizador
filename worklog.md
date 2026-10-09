@@ -15,7 +15,7 @@
 | T7 | Ruteo por catálogo | ✅ | f11fdc4 (ruteo-catalogo.ts + ruteo.ts) | 2025-10-09 |
 | T8 | Hamming-2 + contingencia asistida | ✅ | f11fdc4 | 2025-10-09 |
 | T9 | Corpus Kit 399 al repo + baseline completo | ⬜ | — | — |
-| T10 | Cablear fuenteFullRes (OCR desde warp full-res) | ⬜ | — | — |
+| T10 | Cablear fuenteFullRes (OCR desde warp full-res) | ✅ | ver worklog (T10) | 2025-10-09 |
 | T11 | Banner legible (0/4 → ≥3/4, debug con evidencia) | ⬜ | — | — |
 | T12 | Rescate anti-transposición por único anagrama | ⬜ | — | — |
 | T13 | Cierre: umbral 80% o documentación honesta | ⬜ | — | — |
@@ -124,3 +124,25 @@ Ver/Pag:     3/4 (T-1 no lee pag)
 - Patrón de fallo DIVIPOL confirmado en ambiente local (transposición de dígitos): mesa 001→100 (D-1), municipio 335→533 (T-2, D-2), departamento 88→08/09 (campo de CONTROL, no clave de ruteo). Tal como medía la auditoría.
 - Archivos tocados: public/actas/E14_KIT399_*.jpg (4, nuevos), tests/golden/corpus/E14_KIT399_*.jpg (4, nuevos), worklog.md.
 - Evidencia: salida completa del golden en la sesión (13 passed; TOTAL 41/60=68.3%); commit e69f831 (índice fase 2) → este commit.
+
+---
+Task ID: T10
+Agent: Z.ai Code (GLM)
+Task: Cablear fuenteFullRes — OCR y pistas desde el warp full-res (completa el T2 pendiente)
+
+Work Log:
+- escaner.ts · dataUrlWarpFullRes(): helper nuevo que codifica el bitmap del warp a dataURL JPEG q0.92 (lado mayor capado a 3200 px) con la MISMA rotación local que el resultado (las zonas calibradas asumen orientación final — decisión documentada: sin esto, rotaciones 90/180/270 romperían el OCR del full-res).
+- escaner.ts · procesarPagina(): codifica el warp ANTES de scannerAdapter.realzar (el worker transfiere/neutra el bitmap en el realce — postMessage transfer). El fallback canvas también codifica (desde su bitmap). Retorno: Promise<ResultadoProceso & { warpFullRes?: string }> — intersección LOCAL; src/lib/contrato/types.ts INTACTO.
+- types.ts · CapturaActual: warpFullRes?: string | null (efímero, nunca persiste).
+- PantallaRevision.tsx: EntradaCache.warpFullRes; los 3 caminos cableados: cache-hit (~258) pasa hit.warpFullRes, preview cache-miss (~268) guarda r.warpFullRes en la entrada y pasa a extraerSenalesLocales con limpieza .then(), prepararYFinalizar (~423) reutiliza el del cache o el nuevo y lo pasa a finalizarCaptura. El 3er llamado literal (~696, "descargar" para exportar PNG) NO consume OCR → no se cablea (no hay receptor; hallazgo documentado).
+- store.ts: finalizarCaptura pasa c.warpFullRes a extraerSenalesLocales; limpieza de memoria en finally de extraerSenalesLocales (captura.warpFullRes → null; el guard C-17 evita reruns; nada persistente en IndexedDB). PantallaRevision limpia también su EntradaCache local tras extraer.
+- gancho-golden.ts: expone procesarPagina (espejo de solo lectura) + tests/warp-fullres.spec.mjs (evidencia permanente).
+- Evidencia A (pipeline real, preview:false): tests/warp-fullres.spec.mjs PASSED → {"tieneWarp":true,"esJpeg":true,"lenBase64":506987,"decodable":true,"wDecod":1045} (JPEG ≤3200 px, decodificable de vuelta).
+- Evidencia B (flujo REAL con traza temporal, QUITADA antes del commit): E2E UI Inicio → Opción B (El Cairo 335-05-02) → PROBAR CON ACTA REAL → tarjeta → Revisión → "[T10-TRACE] extraerSenalesLocales fuenteFullRes= 70KB data:image/jpeg;base64,/9j/4AA" — el OCR de la app consume el warp full-res (camino preview, cap CAP_PREVIEW=1500 → ~70 KB; el camino final cap 3200 → ~500 KB, evidenciado en A).
+- Checks: lint 0 errores (1 warning preexistente escaner.ts:346) · tsc limpio · test:contrato OK (escaner.ts tocado) · motor golden 4/4 + warp-fullres 1/1 · golden OCR 13/13 SIN regresión (41/60 = 68.3%, idéntico al baseline T9).
+
+Stage Summary:
+- El OCR de zonas, el del tercio superior y las pistas impresas del flujo REAL ahora consumen el warp full-res (sin filtro de realce y con UNA sola compresión JPEG). T2 queda completado.
+- Hallazgo (preexistente, no tocado por regla de tarjeta): procesarPagina devuelve w:0/h:0 porque liberarCanvas() corre antes de leer canvas.width — los llamadores reciben dims en 0 sin que nada lo consuma hoy (la calidad viene por captura separada). Nota para un futuro fix fuera de esta tarjeta.
+- Archivos tocados: src/lib/digitalizador/escaner.ts, src/lib/digitalizador/types.ts, src/lib/digitalizador/store.ts, src/components/digitalizador/PantallaRevision.tsx, src/lib/ocr/gancho-golden.ts, tests/warp-fullres.spec.mjs (nuevo), worklog.md.
+- Evidencia: números arriba (A y B) + golden 41/60 sin regresión; commit de este mensaje.
