@@ -124,6 +124,9 @@ test.beforeAll("gancho golden disponible", async ({ browser }) => {
 
 for (const caso of esperado.casos) {
   test(`golden OCR: ${caso.imagen}`, async ({ browser }) => {
+    // CI (ubuntu-latest, 2 cores) es más lento que local: el OCR con
+    // ensemble puede superar el default de 30 s por acta.
+    test.setTimeout(240_000);
     // La imagen debe existir en public/actas (los Kit 399 van llegando)
     const rutaPublica = join(__dirname, "..", "public", "actas", caso.imagen);
     if (!existsSync(rutaPublica)) {
@@ -209,6 +212,8 @@ for (const caso of esperado.casos) {
 test("umbral de etapa: pass-rate global de los casos ejecutados", async ({ browser }) => {
   // Recorre los casos ejecutables (imagen presente) y verifica el
   // pass-rate de campos DIVIPOL >= umbral de etapa (0.80 etapa 1).
+  // Timeout generoso: este test corre OCR sobre TODOS los casos.
+  test.setTimeout(300_000);
   const page = await browser.newPage();
   await page.goto(BASE + "/");
   await page.locator("h1").first().waitFor({ state: "visible", timeout: 20_000 });
