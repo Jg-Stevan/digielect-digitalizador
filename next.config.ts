@@ -14,7 +14,9 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const basePath = process.env.NEXT_PUBLIC_BASE_PATH || "/digielect-digitalizador";
+// `??` (no `||`): el .env.example documenta "Vacío = servir en la raíz"
+// — con `||` un valor explícitamente vacío era imposible desde .env.
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? "/digielect-digitalizador";
 const pkg = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), "package.json"), "utf8")
 );

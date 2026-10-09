@@ -186,6 +186,11 @@ interface DigitalizadorState {
   ocrRuteo: OcrRuteo | null;
   /** [FASE-5] true mientras el OCR de ruteo corre en segundo plano. */
   ocrRuteoEnCurso: boolean;
+  /** [DISEÑO-STITCH · RN-03] Reintentos de foto por score BAJO (≤5):
+   * 0 = primer intento → solo "REPETIR FOTO (OBLIGATORIO)";
+   * ≥1 = contingencia manual habilitada. Se reinicia con cada nuevo
+   * objetivo/envío exitoso (no sobrevive a un cambio de ranura). */
+  reintentosRechazo: number;
 
   // Acciones de navegación
   irA: (vista: Vista) => void;
@@ -226,6 +231,8 @@ interface DigitalizadorState {
   finalizarCaptura: (c: CapturaActual) => void;
   /** [FASE-5] Fija/reinicia la sugerencia de ruteo (OCR de zonas). */
   setOcrRuteo: (r: OcrRuteo | null, enCurso?: boolean) => void;
+  /** [DISEÑO-STITCH · RN-03] Registra un reintento tras score bajo. */
+  sumarReintentoRechazo: () => void;
   repetirFoto: () => void;
   analizarCaptura: () => Promise<AnalisisVLM | null>;
   enviarActa: (opts: {
@@ -425,6 +432,7 @@ export const useDigitalizador = create<DigitalizadorState>((set, get) => ({
   siguienteObjetivo: null,
   ocrRuteo: null,
   ocrRuteoEnCurso: false,
+  reintentosRechazo: 0,
   // ----------------------------------------------------------
   // Navegación
   // ----------------------------------------------------------
@@ -570,11 +578,13 @@ export const useDigitalizador = create<DigitalizadorState>((set, get) => ({
   },
 
   irACapturaDesdeControl: (ctx) => {
-    set({ contexto: ctx, edicion: null, captura: null, analisis: null, ultimoEnvio: null, senalesLocales: SENALES_INICIALES, siguienteObjetivo: null, ocrRuteo: null, ocrRuteoEnCurso: false, vista: "captura" });
+    // [DISEÑO-STITCH · RN-03] nuevo objetivo dirigido → reintentos en cero
+    set({ contexto: ctx, edicion: null, captura: null, analisis: null, ultimoEnvio: null, senalesLocales: SENALES_INICIALES, siguienteObjetivo: null, ocrRuteo: null, ocrRuteoEnCurso: false, reintentosRechazo: 0, vista: "captura" });
   },
 
   nuevaCaptura: () => {
-    set({ edicion: null, captura: null, analisis: null, ultimoEnvio: null, senalesLocales: SENALES_INICIALES, ocrRuteo: null, ocrRuteoEnCurso: false, vista: "captura" });
+    // [DISEÑO-STITCH · RN-03] captura libre siguiente → reintentos en cero
+    set({ edicion: null, captura: null, analisis: null, ultimoEnvio: null, senalesLocales: SENALES_INICIALES, ocrRuteo: null, ocrRuteoEnCurso: false, reintentosRechazo: 0, vista: "captura" });
   },
 
   /**
@@ -872,7 +882,17 @@ export const useDigitalizador = create<DigitalizadorState>((set, get) => ({
     }
   },
 
+  /** [DISEÑO-STITCH · RN-03] Cuenta el reintento de una captura con
+   * score BAJO (≤5). NO reinicia con repetirFoto: debe sobrevivir al
+   * ciclo captura→revisión para habilitar la contingencia manual solo
+   * tras el segundo intento. */
+  sumarReintentoRechazo: () => {
+    set((s) => ({ reintentosRechazo: s.reintentosRechazo + 1 }));
+  },
+
   repetirFoto: () => {
+    // NOTA [DISEÑO-STITCH · RN-03]: reintentosRechazo NO se toca aquí —
+    // solo se reinicia con nuevaCaptura/irACapturaDesdeControl/envío ok.
     set({ edicion: null, captura: null, analisis: null, senalesLocales: SENALES_INICIALES, vista: "captura" });
   },
 
@@ -1062,7 +1082,8 @@ export const useDigitalizador = create<DigitalizadorState>((set, get) => ({
           pagina: data.asignacion?.pagina ?? payload.pagina,
         });
       }
-      set({ vista: "exito" });
+      // [DISEÑO-STITCH · RN-03] envío resuelto → reintentos en cero
+      set({ vista: "exito", reintentosRechazo: 0 });
       void get().cargarDatos();
       void get().refrescarContadoresCola();
       return true;
@@ -1156,6 +1177,7 @@ export const useDigitalizador = create<DigitalizadorState>((set, get) => ({
             yaRegistrada: true,
           },
           vista: "exito",
+          reintentosRechazo: 0, // [DISEÑO-STITCH · RN-03] envío resuelto
         });
         get().avanzarContexto({
           mesaId: payload.mesaId,
@@ -1186,7 +1208,8 @@ export const useDigitalizador = create<DigitalizadorState>((set, get) => ({
           hora: new Date().toISOString(),
         },
       });
-      set({ vista: "exito" });
+      // [DISEÑO-STITCH · RN-03] encolada offline → reintentos en cero
+      set({ vista: "exito", reintentosRechazo: 0 });
       return false;
     }
   },

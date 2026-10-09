@@ -102,6 +102,8 @@ export default function PantallaRevision() {
   const setCalidadFoto = useDigitalizador((s) => s.setCalidadFoto);
   const finalizarCaptura = useDigitalizador((s) => s.finalizarCaptura);
   const repetirFoto = useDigitalizador((s) => s.repetirFoto);
+  const sumarReintentoRechazo = useDigitalizador((s) => s.sumarReintentoRechazo);
+  const reintentosRechazo = useDigitalizador((s) => s.reintentosRechazo);
   const enviarActa = useDigitalizador((s) => s.enviarActa);
   const irA = useDigitalizador((s) => s.irA);
   const nuevaCaptura = useDigitalizador((s) => s.nuevaCaptura);
@@ -502,16 +504,6 @@ export default function PantallaRevision() {
     esperaMaxVencida,
   ]);
 
-  /** Fase actual del reconocimiento para el overlay */
-  const faseReconocimiento: FaseReconocimiento =
-    enviando || autoEnCurso
-      ? "envio"
-      : procesandoPreview || !procesada
-        ? "imagen"
-        : senalesLocales.extraccionEnCurso
-          ? "texto"
-          : "info";
-
   const mostrarOverlayReconocimiento =
     (!reconocimientoListo || autoEnCurso) && modo === "revision";
 
@@ -803,21 +795,18 @@ export default function PantallaRevision() {
     ? senalesLocales.ubicacion?.consulado ?? null
     : null;
 
+  // [DISEÑO-STITCH · RN-02/RN-03] mensajes FIJOS por banda — prohibido
+  // calcular motivos dinámicos en la interfaz:
+  //   · ADVERTENCIA (6.0–8.9)  → "Revisión requerida"
+  //   · RECHAZADA (≤ 5.0)      → "No reconocida"
   const motivoTarjeta =
-    banda === "ADVERTENCIA"
-      ? analisis?.problemas && analisis.problemas.length > 0
-        ? analisis.problemas[0].toUpperCase()
-        : "REVISIÓN REQUERIDA (CONTRASTE)"
-      : "ERROR: CÓDIGO E-14 ILEGIBLE (REINTENTAR)";
+    banda === "ADVERTENCIA" ? "Revisión requerida" : "No reconocida";
 
+  // [DISEÑO-STITCH · RN-02] estados EXCLUSIVOS de la banda verde: mientras
+  // viaja la petición "TRANSMITIENDO...", al resolverse "ENVIADO CORRECTA-
+  // MENTE". Prohibido "Listo para enviar" y derivados.
   const estadoPill =
-    // [RN-02 · FLUJO DIRECTO] el auto-envío corre también en escaneo
-    // libre identificado (sin ranura dirigida): misma pill de envío.
-    enviando || autoEnCurso
-      ? "ENVIADO CORRECTAMENTE"
-      : analizando
-        ? "VALIDACIÓN AUTOMÁTICA"
-        : "LISTA PARA ENVIAR";
+    enviando || autoEnCurso ? "TRANSMITIENDO..." : "ENVIADO CORRECTAMENTE";
   const horaEnvio = horaBogota();
 
   const ctaConfirmar = !contexto && identificado;
@@ -1023,14 +1012,12 @@ export default function PantallaRevision() {
                   {banda === "OPTIMA" ? (
                     <span className="flex shrink-0 items-center gap-1.5 truncate font-mono text-[9px]">
                       <span className="font-bold text-brand-400">✓ {estadoPill}</span>
-                      {(enviando || autoEnCurso) && (
-                        <span className="text-zinc-300">{horaEnvio}</span>
-                      )}
+                      <span className="text-zinc-300">{horaEnvio}</span>
                     </span>
                   ) : (
                     <span
                       className={cn(
-                        "shrink-0 truncate text-[9px] font-bold tracking-tight",
+                        "shrink-0 truncate font-mono text-[9px] font-bold uppercase tracking-wider",
                         banda === "ADVERTENCIA" ? "text-warning" : "text-red-400"
                       )}
                     >
@@ -1086,9 +1073,7 @@ export default function PantallaRevision() {
               <span className="text-[10px] font-semibold uppercase tracking-wide text-white">
                 {banda === "OPTIMA"
                   ? estadoPill
-                  : banda === "ADVERTENCIA"
-                    ? "ADVERTENCIA"
-                    : "OBLIGATORIO REPETIR"}
+                  : motivoTarjeta.toUpperCase()}
               </span>
             </button>
           </div>
@@ -1246,18 +1231,16 @@ export default function PantallaRevision() {
                       }
                       nuevaCaptura();
                     }}
-                    /* [OLA7 · Semántica de color] CTA de ACCIÓN en accent
-                       (azul iOS): el verde queda reservado a éxito/validado. */
-                    className="flex h-12 w-full items-center justify-center gap-2.5 rounded-xl bg-accent text-sm font-extrabold uppercase tracking-wider text-white shadow-glow-pill-accent transition-all active:scale-[0.98] disabled:pointer-events-none disabled:opacity-80"
+                    /* [DISEÑO-STITCH · RN-02] CTA de la banda verde: verde
+                       esmeralda brand con glow (diseño). Mientras viaja la
+                       petición muestra "TRANSMITIENDO..." (estado exclusivo;
+                       nunca "Listo para enviar" ni derivados). */
+                    className="flex h-12 w-full items-center justify-center gap-2.5 rounded-xl bg-brand-500 text-sm font-extrabold uppercase tracking-wider text-black shadow-glow-pill transition-all active:scale-[0.98] disabled:pointer-events-none disabled:opacity-80"
                   >
                     {ctaDeshabilitada && <Loader2 className="h-4 w-4 animate-spin" />}
                     {enviando || autoEnCurso
-                      ? "ENVIANDO AUTOMÁTICAMENTE…"
-                      : analizando
-                        ? "VALIDANDO ACTA…"
-                        : ctaConfirmar
-                          ? "ENVIAR AL SERVIDOR"
-                          : "SEGUIR ESCANEANDO"}
+                      ? "TRANSMITIENDO..."
+                      : "SEGUIR ESCANEANDO"}
                   </button>
                   {contexto?.mesaId && (
                     <p className="text-center text-[10px] text-zinc-500">
@@ -1270,59 +1253,85 @@ export default function PantallaRevision() {
               )}
 
               {banda === "ADVERTENCIA" && (
-                <>
+                /* [DISEÑO-STITCH · Paso 4.2] dos CTAs en fila:
+                   "REPETIR FOTO" (secundario) + "TRANSMITIR CON
+                   ADVERTENCIA" (primario ámbar con glow). */
+                <div className="flex w-full gap-2">
+                  <button
+                    type="button"
+                    onClick={repetirFoto}
+                    className="flex h-12 flex-1 items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-zinc-900 text-[12px] font-bold uppercase leading-tight tracking-wider text-white transition-all active:scale-[0.98]"
+                  >
+                    <RefreshCcw className="h-4 w-4 shrink-0" />
+                    REPETIR FOTO
+                  </button>
                   <button
                     type="button"
                     disabled={enviando}
                     onClick={enviarConAdvertencia}
-                    className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-amber-400 text-[13px] font-extrabold uppercase tracking-wide text-black transition-all active:scale-[0.98] disabled:pointer-events-none disabled:opacity-70"
+                    className="flex h-12 flex-[2] items-center justify-center gap-1.5 rounded-xl bg-warning px-2 text-[12px] font-extrabold uppercase leading-tight tracking-wider text-black shadow-lg shadow-warning/20 transition-all active:scale-[0.98] disabled:pointer-events-none disabled:opacity-70"
                   >
                     {enviando ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
+                      <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
                     ) : (
-                      <AlertTriangle className="h-4 w-4" />
+                      <AlertTriangle className="h-4 w-4 shrink-0" />
                     )}
-                    ENVIAR BAJO OBSERVACIÓN
+                    TRANSMITIR CON ADVERTENCIA
                   </button>
-                  <button
-                    type="button"
-                    onClick={repetirFoto}
-                    className="flex h-12 w-full items-center justify-center gap-2 rounded-xl border border-amber-400/40 bg-ink-700 text-[13px] font-bold uppercase tracking-wide text-amber-400 transition-all active:scale-[0.98]"
-                  >
-                    <RefreshCcw className="h-4 w-4" />
-                    REPETIR PARA SUBIR SCORE
-                  </button>
-                  <p className="text-center text-[10px] text-zinc-500">
-                    El envío bajo observación queda marcado para auditoría.
-                  </p>
-                </>
+                </div>
               )}
 
-              {banda === "RECHAZADA" && (
-                <>
-                  <div className="flex w-full items-center gap-2">
+              {banda === "RECHAZADA" &&
+                /* [DISEÑO-STITCH · RN-03 + Paso 4.3/4.4] PRIMER intento
+                   fallido (reintentosRechazo === 0): un ÚNICO botón
+                   bloqueante "REPETIR FOTO (OBLIGATORIO)" — el envío está
+                   prohibido. Tras el segundo intento (≥1) se habilita la
+                   contingencia manual ("ENVIAR A REVISIÓN HUMANA"). */
+                (reintentosRechazo === 0 ? (
+                  <>
                     <button
                       type="button"
-                      onClick={repetirFoto}
-                      className="flex h-12 flex-1 items-center justify-center gap-1.5 rounded-xl bg-red-600 px-2 text-[11px] font-extrabold uppercase leading-tight tracking-wide text-white shadow-lg shadow-red-600/30 transition-all active:scale-[0.98]"
+                      onClick={() => {
+                        sumarReintentoRechazo();
+                        repetirFoto();
+                      }}
+                      className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-red-500 text-[13px] font-extrabold uppercase tracking-wider text-white shadow-lg shadow-red-500/20 transition-all active:scale-[0.98]"
                     >
-                      <RefreshCcw className="h-4 w-4 shrink-0" />
-                      OBLIGATORIO REPETIR FOTO
+                      <RefreshCcw className="h-4 w-4" />
+                      REPETIR FOTO (OBLIGATORIO)
                     </button>
-                    <button
-                      type="button"
-                      onClick={enviarConAdvertencia}
-                      className="flex h-12 flex-1 items-center justify-center gap-1.5 rounded-xl border border-red-500/30 bg-white/5 px-2 text-[11px] font-semibold uppercase leading-tight text-zinc-300 transition-all active:scale-[0.98]"
-                    >
-                      <AlertTriangle className="h-4 w-4 shrink-0 text-red-400" />
-                      ENVIAR A REVISIÓN HUMANA
-                    </button>
-                  </div>
-                  <p className="text-center text-[10px] text-zinc-500">
-                    La transmisión está bloqueada hasta repetir la foto.
-                  </p>
-                </>
-              )}
+                    <p className="text-center text-[10px] text-zinc-500">
+                      La transmisión está bloqueada hasta repetir la foto.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex w-full items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          sumarReintentoRechazo();
+                          repetirFoto();
+                        }}
+                        className="flex h-12 flex-1 items-center justify-center gap-1.5 rounded-xl bg-red-600 px-2 text-[11px] font-extrabold uppercase leading-tight tracking-wide text-white shadow-lg shadow-red-600/30 transition-all active:scale-[0.98]"
+                      >
+                        <RefreshCcw className="h-4 w-4 shrink-0" />
+                        OBLIGATORIO REPETIR FOTO
+                      </button>
+                      <button
+                        type="button"
+                        onClick={enviarConAdvertencia}
+                        className="flex h-12 flex-1 items-center justify-center gap-1.5 rounded-xl border border-red-500/30 bg-white/5 px-2 text-[11px] font-semibold uppercase leading-tight text-zinc-300 transition-all active:scale-[0.98]"
+                      >
+                        <AlertTriangle className="h-4 w-4 shrink-0 text-red-400" />
+                        ENVIAR A REVISIÓN HUMANA
+                      </button>
+                    </div>
+                    <p className="text-center text-[10px] text-zinc-500">
+                      Segundo intento: la contingencia manual está habilitada.
+                    </p>
+                  </>
+                ))}
             </div>
 
           </div>
@@ -1355,11 +1364,11 @@ export default function PantallaRevision() {
         </div>
       )}
 
-      {/* ===== [RECONOCIENDO ACTA] página de carga del reconocimiento ===== */}
+      {/* ===== [DISEÑO-STITCH · Paso 1] overlay minimalista "Analizando acta..." ===== */}
       {mostrarOverlayReconocimiento && (
-        <OverlayReconociendo
-          imagen={preview ?? edicion.original}
-          fase={faseReconocimiento}
+        <OverlayAnalizando
+          extraccionEnCurso={senalesLocales.extraccionEnCurso}
+          transmitiendo={enviando || autoEnCurso}
         />
       )}
 
@@ -1764,146 +1773,55 @@ async function rotarImagen(dataUrl: string, filtro: FiltroPagina): Promise<strin
 }
 
 // ============================================================
-// [RECONOCIENDO ACTA] Página de carga del reconocimiento
-// Overlay inmersivo que cubre el reconocimiento del acta:
-//   1. IMAGEN    — recorte automático + filtro B/N (canvas)
-//   2. TEXTO     — extracción OCR del tercio superior + QR
-//   3. INFO      — búsqueda de la información del acta
-//                  (índice O(1) + análisis VLM del servidor)
-//   4. ENVÍO     — transmisión automática (solo score alto)
-// La miniatura del acta se muestra con línea de escaneo
-// (mismo lenguaje visual del escáner: marco + laser brand).
+// [DISEÑO-STITCH · Paso 1] Overlay minimalista "Analizando acta..."
+// Fondo negro puro, marco de 4 esquinas delimitadoras brand y
+// spinner con pulso. Subtexto según la fase real del reconocimiento:
+//   · envío en curso    → "Transmitiendo acta..."
+//   · extracción OCR/QR → "Extrayendo ruteo..."
+//   · resto             → "Validando calidad..."
 // ============================================================
 
-type FaseReconocimiento = "imagen" | "texto" | "info" | "envio";
-
-const FASES_RECONOCIMIENTO: { id: FaseReconocimiento; label: string; detalle: string }[] = [
-  {
-    id: "imagen",
-    label: "PROCESANDO IMAGEN",
-    detalle: "Recorte automático y filtro B/N adaptativo",
-  },
-  {
-    id: "texto",
-    label: "EXTRAYENDO TEXTO CON OCR",
-    detalle: "Leyendo código de barras, QR y zona X",
-  },
-  {
-    id: "info",
-    label: "BUSCANDO INFORMACIÓN DEL ACTA",
-    detalle: "Cruzando con el índice DIVIPOL del puesto",
-  },
-  {
-    id: "envio",
-    label: "ENVIANDO AUTOMÁTICAMENTE",
-    detalle: "Transmitiendo al servidor central",
-  },
-];
-
-function OverlayReconociendo({
-  imagen,
-  fase,
+function OverlayAnalizando({
+  extraccionEnCurso,
+  transmitiendo,
 }: {
-  imagen: string | null;
-  fase: FaseReconocimiento;
+  extraccionEnCurso: boolean;
+  transmitiendo: boolean;
 }) {
-  const indiceFase = Math.max(
-    0,
-    FASES_RECONOCIMIENTO.findIndex((f) => f.id === fase)
-  );
-  const actual = FASES_RECONOCIMIENTO[indiceFase];
-
   return (
     <div
       data-testid="reconociendo-acta"
       role="status"
       aria-live="polite"
-      className="absolute inset-0 z-[70] flex flex-col items-center justify-center gap-6 bg-[#050705] px-8"
+      className="absolute inset-0 z-[70] bg-black"
     >
-      {/* Encabezado mínimo (coherente con el diseño brand) */}
-      <div className="flex flex-col items-center gap-0.5">
-        <span className="font-mono text-[10px] uppercase tracking-[0.3em] text-zinc-500">
-          E-14 · SISTEMA DE RECONOCIMIENTO
-        </span>
-      </div>
+      <div className="relative flex h-full w-full flex-col items-center justify-center bg-black">
+        {/* Marco de esquinas minimalistas */}
+        <div className="relative flex h-96 w-72 flex-col items-center justify-center rounded-lg border border-white/10 p-6">
+          <span className="absolute -left-1 -top-1 h-4 w-4 border-l-2 border-t-2 border-brand-500" />
+          <span className="absolute -right-1 -top-1 h-4 w-4 border-r-2 border-t-2 border-brand-500" />
+          <span className="absolute -bottom-1 -left-1 h-4 w-4 border-b-2 border-l-2 border-brand-500" />
+          <span className="absolute -bottom-1 -right-1 h-4 w-4 border-b-2 border-r-2 border-brand-500" />
 
-      {/* Miniatura del acta con línea de escaneo */}
-      <div className="relative flex h-[230px] w-full max-w-[190px] items-center justify-center overflow-hidden rounded-xl border border-brand-500/25 bg-zinc-950 shadow-[0_0_44px_rgba(0,230,118,0.14)]">
-        {imagen && (
-          <img
-            src={imagen}
-            alt="Acta en reconocimiento"
-            className="h-full w-full select-none object-contain opacity-60"
-            draggable={false}
-          />
-        )}
-        {/* Marco de esquinas del escáner */}
-        <div className="pointer-events-none absolute inset-0 z-10">
-          <div className="scanner-frame border-brand-500/60">
-            <div className="scanner-frame-inner" />
+          {/* Pulso / Spinner minimalista */}
+          <div className="relative mb-4 flex items-center justify-center">
+            <span className="absolute h-10 w-10 animate-ping rounded-full bg-brand-500/30" />
+            <Loader2 className="h-8 w-8 animate-spin text-brand-500" />
           </div>
-        </div>
-        {/* Línea láser de escaneo */}
-        <div className="pointer-events-none absolute inset-x-2 z-20">
-          <div className="scan-line absolute h-[2px] w-full bg-brand-500 shadow-[0_0_14px_rgba(0,230,118,0.95)]" />
-        </div>
-        {/* Halo de barrido suave */}
-        <div className="pointer-events-none absolute inset-x-2 z-[15]">
-          <div className="scan-line absolute h-8 w-full bg-gradient-to-b from-transparent via-brand-500/10 to-transparent" />
+
+          {/* Texto exacto del diseño */}
+          <h2 className="text-sm font-bold uppercase tracking-wider text-white">
+            Analizando acta...
+          </h2>
+          <p className="mt-1 font-mono text-[11px] uppercase tracking-widest text-zinc-400">
+            {transmitiendo
+              ? "Transmitiendo acta..."
+              : extraccionEnCurso
+                ? "Extrayendo ruteo..."
+                : "Validando calidad..."}
+          </p>
         </div>
       </div>
-
-      {/* Título + detalle de la fase */}
-      <div className="flex flex-col items-center gap-1.5 text-center">
-        <h2 className="text-lg font-extrabold uppercase tracking-[0.18em] text-brand-500">
-          RECONOCIENDO ACTA
-        </h2>
-        <p className="font-mono text-[11px] font-semibold tracking-wide text-zinc-300">
-          {actual.label}
-        </p>
-        <p className="text-[11px] text-zinc-500">{actual.detalle}</p>
-      </div>
-
-      {/* Pasos del reconocimiento */}
-      <ol className="flex w-full max-w-[260px] flex-col gap-2">
-        {FASES_RECONOCIMIENTO.map((p, i) => {
-          const hecho = i < indiceFase;
-          const activo = i === indiceFase;
-          return (
-            <li
-              key={p.id}
-              className={cn(
-                "flex items-center gap-2.5 rounded-lg border px-3 py-1.5 transition-colors duration-300",
-                activo
-                  ? "border-brand-500/35 bg-brand-500/10"
-                  : hecho
-                    ? "border-brand-500/20 bg-transparent"
-                    : "border-white/5 bg-transparent opacity-45"
-              )}
-            >
-              {hecho ? (
-                <Check className="h-3.5 w-3.5 shrink-0 text-brand-500" strokeWidth={3} />
-              ) : activo ? (
-                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-brand-500" />
-              ) : (
-                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-zinc-600" />
-              )}
-              <span
-                className={cn(
-                  "data-mono truncate text-[9.5px] font-bold tracking-wide",
-                  activo ? "text-brand-400" : hecho ? "text-zinc-300" : "text-zinc-500"
-                )}
-              >
-                {p.label}
-              </span>
-            </li>
-          );
-        })}
-      </ol>
-
-      <p className="text-center text-[10px] text-zinc-600">
-        No cierre la aplicación · el reconocimiento es automático
-      </p>
     </div>
   );
 }
