@@ -43,18 +43,21 @@ export function parsearBarcodeImpreso(
   // espacios; aquí tomamos el run puro — NUNCA reensamblamos trozos).
   const d15 = /\d{15}/.exec(plano.replace(/[^\d]/g, " "))?.[0] ?? null;
 
-  // Ver: NN
-  const ver = /ve?r\W{0,3}(\d{1,2})/i.exec(plano)?.[1] ?? null;
+  // Ver: NN — tolerante al ruido medido ("ve01", "Ver 01", "Ver: 01")
+  const ver = /v\W{0,2}e\W{0,2}r?\W{0,3}(\d{1,2})/i.exec(plano)?.[1] ?? null;
 
-  // Pag: N de M (tolerante)
+  // Pag: N de M (tolerante). LO QUE EL OCR DE VERDAD PRODUCE:
+  //  · "Pag: 1 de 2" · "Pag 1 no 2" (de≈no en impresión débil)
+  //  · "Pagde2" (el dígito de Pag se pierde — NUNCA se inventa:
+  //    sin dígito explícito no hay voto de página por esta vía)
   let pag: string | null = null;
   let de: string | null = null;
-  const m1 = /pa[giqtro]{0,3}\W{0,4}(\d)\W{0,4}d[ei]\W{0,4}(\d)/i.exec(plano);
+  const m1 = /pa[giqtro]{0,3}\W{0,4}(\d)\W{0,4}d[en]\W{0,4}(\d)/i.exec(plano);
   if (m1) {
     pag = m1[1];
     de = m1[2];
   } else {
-    const m2 = /(\d)\s*de\s*(\d)/i.exec(plano);
+    const m2 = /(\d)\s*d[en]\s*(\d)/i.exec(plano);
     if (m2) {
       pag = m2[1];
       de = m2[2];
