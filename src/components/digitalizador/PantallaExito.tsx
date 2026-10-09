@@ -4,9 +4,10 @@
 // DIGITALIZADOR E-14 — REVISIÓN DE ACTA (resultado del envío)
 // Réplica EXACTA del diseño Stitch: header brand "REVISIÓN DE
 // ACTA / E-14", píldora de estado "✓ 9.8/10 ÓPTIMA · ENVIADO
-// CORRECTAMENTE", DOCUMENTO del acta re-dibujado con los datos
-// leídos (ActaDocumento) dentro del marco de esquinas verde,
-// y CTA "SEGUIR ESCANEANDO" con glow.
+// CORRECTAMENTE", [SOLO ACTAS REALES — CLAUDE.md · REGLA
+// ABSOLUTA] la IMAGEN REAL del pliego digitalizado (warp del flujo
+// real) dentro del marco de esquinas verde — NUNCA un re-dibujo
+// del acta — y CTA "SEGUIR ESCANEANDO" con glow.
 // [RN-02 · FLUJO DIRECTO] Con score ≥9 y código leído, el envío
 // fue AUTOMÁTICO: esta pantalla confirma el resultado y devuelve
 // al escaneo — la contingencia manual no participa.
@@ -33,30 +34,6 @@ import {
 } from "@/lib/digitalizador/reglas";
 import type { Banda } from "@/lib/digitalizador/types";
 import { useDigitalizador } from "@/lib/digitalizador/store";
-import ActaDocumento, { type DatosActaDocumento, type DatoResultadoActa } from "./ActaDocumento";
-
-/** Etiqueta de contienda por código de elección del barcode15.
- *  Solo hay canon documentado para 71 (Presidencia — ver
- *  docs/contexto/negocio/02): el resto cae al genérico honesto. */
-const TITULO_ELECCION: Record<string, string> = {
-  "71": "PRESIDENCIA Y VICEPRESIDENCIA",
-  "72": "SENADO DE LA REPÚBLICA",
-  "73": "CÁMARA DE REPRESENTANTES",
-};
-
-/** Etiqueta compacta del candidato para las casillas del documento:
- *  números tal cual; nombres acortados en límite de palabra (nunca
- *  cortados a mitad: "IVÁN CEPEDA…", no "IVÁN CEPED"). */
-function etiquetaCandidato(nombre: string, indice: number): string {
-  const limpio = nombre.trim().replace(/\s+/g, " ");
-  if (/^\d+$/.test(limpio)) return limpio;
-  if (!limpio) return `${indice + 1}`;
-  const MAX = 18;
-  if (limpio.length <= MAX) return limpio;
-  const corte = limpio.slice(0, MAX);
-  const ultimoEspacio = corte.lastIndexOf(" ");
-  return `${ultimoEspacio > 6 ? corte.slice(0, ultimoEspacio) : corte.trimEnd()}…`;
-}
 
 export default function PantallaExito() {
   const ultimoEnvio = useDigitalizador((s) => s.ultimoEnvio);
@@ -174,57 +151,9 @@ export default function PantallaExito() {
     ? parseado.tipoEjemplar
     : (tipoEjemplar as string | undefined) ?? null;
 
-  const tituloCuerpo = parseado.ok
-    ? TITULO_ELECCION[parseado.info.eleccion] ?? "ACTA DE ESCRUTINIO"
-    : "ACTA DE ESCRUTINIO";
-
-  const resultados = (analisis?.resultados ?? [])
-    .filter((r) => r.candidato)
-    .map((r, i) => ({
-      etiqueta: etiquetaCandidato(String(r.candidato), i),
-      votos: r.votos,
-    }));
-
-  // Votos informativos leídos (parte de la información del acta):
-  // EN BLANCO / NULOS / NO MARCADOS. El contrato tiene DOS formas
-  // (array {concepto,votos} en types.ts · objeto {enBlanco,nulos,…}
-  // en la respuesta real de /api/actas/analizar): se admiten ambas.
-  const informativos: DatoResultadoActa[] = [];
-  const vi = analisis?.votosInformativos as
-    | { concepto: string; votos: number | null }[]
-    | { enBlanco?: number | null; nulos?: number | null; noMarcadas?: number | null }
-    | null
-    | undefined;
-  if (Array.isArray(vi)) {
-    for (const v of vi) {
-      const etiqueta = String(v?.concepto ?? "").trim().toUpperCase();
-      if (!etiqueta || v?.votos == null) continue;
-      informativos.push({ etiqueta, votos: v.votos });
-    }
-  } else if (vi && typeof vi === "object") {
-    const o = vi as { enBlanco?: number | null; nulos?: number | null; noMarcadas?: number | null };
-    if (o.enBlanco != null) informativos.push({ etiqueta: "EN BLANCO", votos: o.enBlanco });
-    if (o.nulos != null) informativos.push({ etiqueta: "NULOS", votos: o.nulos });
-    if (o.noMarcadas != null) informativos.push({ etiqueta: "NO MARCADOS", votos: o.noMarcadas });
-  }
-
-  const datos: DatosActaDocumento = {
-    codigoMostrado: senalesLocales.codigoX ?? (barcodeBruto ? barcodeBruto.slice(0, 6) : null),
-    digitosBarcode: barcodeBruto ?? senalesLocales.codigoX,
-    pagina: parseado.ok ? parseado.info.pagina : pagina,
-    totalPaginas: parseado.ok ? parseado.info.totalPaginas : null,
-    // Exterior: departamento 88 = CONSULADOS (fuente: seed Registraduría)
-    dep: "CONSULADOS",
-    mun,
-    zona,
-    puesto: puestoCodigo,
-    mesa: mesaNumero,
-    tituloCuerpo,
-    resultados,
-    informativos,
-    firmasDetectadas: analisis?.firmasDetectadas ?? null,
-    tipoEjemplar: tipo,
-  };
+  // [S-11 honestidad] Total de páginas: barcode15 parseado → null
+  // ("—"); JAMÁS se inventa el dígito que no se leyó.
+  const totalPaginas = parseado.ok ? parseado.info.totalPaginas : null;
 
   const rutaRapida = [
     consulado?.pais ?? mun,
@@ -232,7 +161,7 @@ export default function PantallaExito() {
     nombrePuesto,
     mesaNumero ? `MESA ${String(mesaNumero).padStart(3, "0")}` : null,
     tipo,
-    `PÁG ${pagina} DE ${datos.totalPaginas ?? 2}`,
+    `PÁG ${pagina} DE ${totalPaginas}`,
   ]
     .filter(Boolean)
     .join(" > ")
@@ -365,7 +294,7 @@ export default function PantallaExito() {
           </div>
         )}
 
-        {/* ===== DOCUMENTO DEL ACTA (datos leídos en cada espacio) ===== */}
+        {/* ===== ACTA REAL — imagen del pliego digitalizado ===== */}
         <div className="relative mx-auto w-full max-w-[360px] flex-1 py-2">
           {/* Marco de esquinas (verde — banda óptima / ámbar / rojo) */}
           <div className="pointer-events-none absolute inset-0 z-10">
@@ -375,10 +304,36 @@ export default function PantallaExito() {
             </div>
           </div>
           <div className="fine-scroll flex h-full items-start justify-center overflow-y-auto py-2">
-            {/* [ACTA ESCANEADA] el diseño acoplado al escaneo: la imagen
-                REAL digitalizada del pliego DENTRO del documento, con la
-                información leída en cada espacio del diseño. */}
-            <ActaDocumento datos={datos} imagen={imagenActa} />
+            {/* [SOLO ACTAS REALES · CLAUDE.md · REGLA ABSOLUTA] La IMAGEN
+                REAL del pliego (warp del flujo real — la misma que viajó
+                al servidor) en el espacio que el diseño de esta pantalla
+                reserva para el acta. NUNCA un re-dibujo o documento
+                sintético. */}
+            <figure className="w-full" data-testid="acta-real">
+              {imagenActa ? (
+                <>
+                  <div className="relative overflow-hidden rounded-sm border border-white/15 bg-zinc-950">
+                    <img
+                      src={imagenActa}
+                      alt="Acta E-14 escaneada — imagen real digitalizada del pliego"
+                      className="mx-auto max-h-[300px] w-full select-none object-contain"
+                      draggable={false}
+                    />
+                  </div>
+                  <figcaption className="flex items-center justify-between pt-1 font-mono text-[8px] tracking-wider text-zinc-500">
+                    <span className="flex items-center gap-1">
+                      <span className="inline-block h-1.5 w-1.5 rounded-full bg-brand-500" />
+                      ACTA ESCANEADA
+                    </span>
+                    <span>IMAGEN REAL · DIGITALIZADA</span>
+                  </figcaption>
+                </>
+              ) : (
+                <div className="flex min-h-[180px] w-full items-center justify-center rounded-sm border border-dashed border-white/20 font-mono text-[10px] font-bold text-zinc-500">
+                  — SIN IMAGEN DEL ACTA —
+                </div>
+              )}
+            </figure>
           </div>
         </div>
 
@@ -402,7 +357,7 @@ export default function PantallaExito() {
               esValidado ? "bg-brand-500" : esEnCola || esAnomalia ? "bg-warning" : "bg-red-500"
             )}
           />
-          PÁG {datos.pagina ?? 1} DE {datos.totalPaginas ?? 2} — FORMULARIO{" "}
+          PÁG {pagina ?? 1} DE {totalPaginas ?? 2} — FORMULARIO{" "}
           {tipo === "TRANSMISION" ? "TRANSMISIÓN" : tipo === "DELEGADOS" ? "DELEGADOS" : "—"} (E-14)
         </p>
 

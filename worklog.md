@@ -15,6 +15,19 @@
 | T7 | Ruteo por catálogo | ✅ | f11fdc4 (ruteo-catalogo.ts + ruteo.ts) | 2025-10-09 |
 | T8 | Hamming-2 + contingencia asistida | ✅ | f11fdc4 | 2025-10-09 |
 
+## FASE 3 v3 — Actas REALES + diseños Stitch (T14–T17)
+
+> Protocolo: `INSTRUCCIONES-AGENTE-FASE3.md` (upload del dueño).
+> Gate de entrada: fase previa CERRADA en main (PR #9 mergeado en
+> `3d3add8` — CI verde + deploy Pages; worklog T0–T8 ✅). Rama: `fase-3-actas-reales`.
+
+| Tarea | Descripción | Estado | Commit | Fecha |
+|---|---|---|---|---|
+| T14 | Regla PERMANENTE en CLAUDE.md + eliminación del acta sintética | ✅ | ver abajo | 2025-10-10 |
+| T15 | Información del acta en las pantallas Stitch (ruteo/kit/pág/tipo) | ⬜ | | |
+| T16 | E2E del flujo REAL: acta real + información correcta | ⬜ | | |
+| T17 | Pulido + guía de prueba del dueño | ⬜ | | |
+
 Baseline inicial (medido, T0):
 ```
 Golden OCR sobre las 8 actas del repo (scan-completo — las cajas están calibradas
@@ -85,3 +98,23 @@ Stage Summary:
 - feat/plan-deteccion-v2 MERGEADA a main y DEPLOYADA a Pages con todas las mejoras T0–T8 + Stitch. CI imprimiendo la tabla golden en cada run (modo medición, sin gate).
 - PENDIENTE (requiere material del usuario): las 4 JPG de corpus-golden/ → copiarlas a tests/golden/corpus/ + public/actas/ (nombres exactos en tests/golden/corpus/README.md), correr golden completo, reportar tabla post-mejoras vs baseline 67.5%. Si ≥80% → activar GOLDEN_STRICT=1 en el paso de CI. Si no → analizar campos fallando antes de tocar código.
 
+
+---
+Task ID: T14
+Agent: Z.ai Code (GLM) — Fase 3 v3
+Task: Regla PERMANENTE "SOLO ACTAS REALES · DISEÑO = STITCH" en CLAUDE.md + eliminación del acta sintética (ActaDocumento.tsx) según INSTRUCCIONES-AGENTE-FASE3.md
+
+Work Log:
+- Gate de entrada verificado: fase previa cerrada en main (PR #9 mergeado `3d3add8`, CI verde, deploy Pages OK, worklog T0–T8 ✅ + tarjeta "Task 8 push/PR/merge/Pages"). Repo clonado en limpio; baseline reproducido antes de tocar nada.
+- CLAUDE.md: añadida al INICIO (tras el título) la sección "🚨 REGLA ABSOLUTA — SOLO ACTAS REALES · DISEÑO = STITCH" con el texto EXACTO del instructivo (3 puntos: prohibido re-dibujar actas, Stitch = única fuente visual, toda IA lee el archivo completo).
+- Eliminado `src/components/digitalizador/ActaDocumento.tsx` (231 líneas: encabezado falso REGISTRADURÍA, barcode DIBUJADO con anchos módulo-3, casillas de votos dibujadas, trazo de firma simulado). `rg -n "ActaDocumento" src/` → VACÍO.
+- `PantallaExito.tsx`: bloque del documento sintético (~L368-383) REEMPLAZADO por la IMAGEN REAL del pliego (mismo contenedor: marco de esquinas verde scanner-frame + fine-scroll, figure con data-testid="acta-real", img del warp con caption "ACTA ESCANEADA / IMAGEN REAL · DIGITALIZADA", placeholder honesto "— SIN IMAGEN DEL ACTA —" si no hay imagen). Botón "Ver acta digitalizada en pantalla completa" (`btn-ver-acta-digitalizada`) y visor a pantalla completa CONSERVADOS intactos.
+- Helpers que solo servían al re-dibujo ELIMINADOS de PantallaExito: `TITULO_ELECCION`, `etiquetaCandidato`, construcción `resultados`/`informativos` (votos — regla de producto: no se leen), `tituloCuerpo`, objeto `datos` (DatosActaDocumento). Locales nuevos: `totalPaginas` (parseado → null, S-11: nunca inventar).
+- Checks: `bun run lint` 0 errores (1 warning preexistente en escaner.ts, documentado) · `bun run tsc` limpio · motor golden 4/4 (21.6 s) · golden OCR modo medición TOTAL 27/40 (67.5%) = baseline exacto, SIN REGRESIÓN (dev server 3210 con NEXT_PUBLIC_BASE_PATH=/digielect-digitalizador).
+- ANTES/DESPUÉS del bloque reemplazado (descripción para el dueño):
+  · ANTES: dentro del marco de esquinas verdes, un "documento" de PAPEL BLANCO dibujado por la app: encabezado "REGISTRADURÍA NACIONAL" inventado, código de barras pintado con barritas div de anchos calculados, "PÁG 01 DE 02" del parser, casillas de votos, tres líneas de "JURADO 1/2/3" con un garabato SVG simulando firmas, y la imagen real APLASTADA en medio del dibujo.
+  · DESPUÉS: el mismo marco de esquinas verdes muestra SOLO la IMAGEN REAL del acta escaneada (la que viajó al servidor), con caption "ACTA ESCANEADA · IMAGEN REAL DIGITALIZADA", botón de pantalla completa intacto. Cero elementos dibujados: ningún barcode, casilla ni firma simulados.
+
+Stage Summary:
+- Regla del dueño grabada en CLAUDE.md para toda IA futura; acta sintética eliminada sin referencias rotas; app compila; motor 4/4; golden OCR 27/40 sin regresión. Rama: `fase-3-actas-reales`.
+- Pendiente T15: cablear ruteo resuelto/kit/página/tipo a los campos de información de las pantallas Stitch + píldora de advertencia de conflicto.
