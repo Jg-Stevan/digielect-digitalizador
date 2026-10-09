@@ -11,7 +11,7 @@
 // red: el offline estricto no se ve afectado.
 // ============================================================
 
-import { reconocerZonasRuteo, reconocerPistas, workerOcrRuteo } from "@/lib/ocr/motor-ocr";
+import { reconocerZonasRuteo, reconocerPistas, workerOcrRuteo, __debugBanner } from "@/lib/ocr/motor-ocr";
 import { resolverRuteo } from "@/lib/ocr/ruteo";
 import { ZONAS_RUTEO_E14, ZONAS_PISTAS_E14 } from "@/lib/ocr/zonas-e14";
 import {
@@ -41,6 +41,7 @@ if (typeof window !== "undefined") {
     parsearFooter,
     tipoDesdeBanner,
     procesarPagina,
+    __debugBanner,
     ZONAS_RUTEO_E14,
     ZONAS_PISTAS_E14,
   };

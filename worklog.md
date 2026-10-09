@@ -16,7 +16,7 @@
 | T8 | Hamming-2 + contingencia asistida | ✅ | f11fdc4 | 2025-10-09 |
 | T9 | Corpus Kit 399 al repo + baseline completo | ⬜ | — | — |
 | T10 | Cablear fuenteFullRes (OCR desde warp full-res) | ✅ | ver worklog (T10) | 2025-10-09 |
-| T11 | Banner legible (0/4 → ≥3/4, debug con evidencia) | ⬜ | — | — |
+| T11 | Banner legible (0/4 → ≥3/4, debug con evidencia) | ✅ | ver worklog (T11) | 2025-10-09 |
 | T12 | Rescate anti-transposición por único anagrama | ⬜ | — | — |
 | T13 | Cierre: umbral 80% o documentación honesta | ⬜ | — | — |
 
@@ -146,3 +146,23 @@ Stage Summary:
 - Hallazgo (preexistente, no tocado por regla de tarjeta): procesarPagina devuelve w:0/h:0 porque liberarCanvas() corre antes de leer canvas.width — los llamadores reciben dims en 0 sin que nada lo consuma hoy (la calidad viene por captura separada). Nota para un futuro fix fuera de esta tarjeta.
 - Archivos tocados: src/lib/digitalizador/escaner.ts, src/lib/digitalizador/types.ts, src/lib/digitalizador/store.ts, src/components/digitalizador/PantallaRevision.tsx, src/lib/ocr/gancho-golden.ts, tests/warp-fullres.spec.mjs (nuevo), worklog.md.
 - Evidencia: números arriba (A y B) + golden 41/60 sin regresión; commit de este mensaje.
+
+---
+Task ID: T11
+Agent: Z.ai Code (GLM)
+Task: Banner legible 0/4 → 4/4 en corpus Kit 399 (debug con evidencia)
+
+Work Log:
+- Helper de debug __debugBanner() añadido a motor-ocr.ts y expuesto por el gancho golden (perfiles de densidad + runs con aceptada/motivo + OCR de ambas pasadas). Instrumentación de solo lectura.
+- EVIDENCIA 1 (debug, umbral vigente): la banda que aceptaba buscarBandaBanner en pág. 1 era el encabezado "NIVELACIÓN DE LA MESA" (y≈0.231, dens 0.884) — NO el banner. El banner real (CÓNSUL/EMBAJADOR / TRANSMISIÓN, y≈0.040–0.058) tiene filas de densidad 0.35–0.55 (letras blancas grandes diluyen el negro) → el umbral de fila 0.55 lo fragmentaba en runs de alto 0.0012 → rechazo. En pág. 2 ni NIVELACIÓN pasaba → banda null. Por eso 0/4.
+- EVIDENCIA 2 (runs con umbral 0.25 + franja completa y=0.03–0.135 PSM 6, ambas pasadas): la franja lee TODO el encabezado incluida la banda ("CÓNSUL/EMBAJADOR" en D-1) — tesseract maneja el blanco-sobre-negro en modo bloque, pero PSM 7 sobre la banda recortada devuelve basura (la trata como gráfico en modo línea).
+- EVIDENCIA 3 (matriz 14 configs × 4 páginas, bitmap original): franja PSM 3/4/11 golpea 4/4; PSM 7/13 sobre banda recortada 0/4.
+- EVIDENCIA 4 (afinado con entrada RECOMPRIMIDA del flujo real, cap 3200 + JPEG 0.95 como el golden): T-1 solo lo lee la franja [0.15,0.045,0.7,0.09] l2200 (PSM 3/4, ambas pasadas); D-1 en esa geometría se cae y lo lee [0.15,0.03,0.7,0.105] l1800.
+- FIX implementado en reconocerPistas(): cadena de 2 geometrías × 2 pasadas (normal→cubre banner negro-sobre-blanco de scans; invertida→blanco-sobre-negro de corpus 200 dpi), PSM 3, whitelist con acentos (CÓNSUL/TRANSMISIÓN medidos), validación tipoDesdeBanner() en CADA paso (primera válida gana; ninguna → null. Sin votos forzados — la señal sigue valiendo 0.35 en clasificarEjemplar).
+- Verificación: banner 4/4 Kit 399 en el golden (T-1 TRANSMISION · T-2 TRANSMISION · D-1 DELEGADOS · D-2 DELEGADOS) · actas repo: 3 null + 5 lecturas VERDADERAS (02-2 TRANSMISION, 81-1/81-2 y 355-1/355-2 DELEGADOS — sus banners negros-sobre-blanco SON legibles y el tipo coincide con el ejemplar impreso; la nota "allí esperado: null" del plan no anticipaba lecturas correctas, no hay NINGÚN falso positivo: 0 votos contradichos o basura) · lint 0 errores (1 warning preexistente) · tsc limpio · contrato OK (ruteo/escaner no tocados, motor sí) · motor golden 4/4 · golden OCR 13/13 TOTAL 41/60 (68.3%) sin regresión.
+- Tiempo OCR zonas+pistas: 1601–4423 ms/acta (antes 244–877). El peor caso (4.4 s) son actas repo SIN banner válido que pagan la cadena completa; presupuesto 5 s sigue en verde pero más justo. Hallazgo documentado.
+- Archivos tocados: src/lib/ocr/motor-ocr.ts (bandasCandidatasBanner núcleo de __debugBanner + franja en reconocerPistas; los candidatos densidad quedan como instrumentación), src/lib/ocr/gancho-golden.ts (__debugBanner), worklog.md.
+
+Stage Summary:
+- BANNER 4/4 EN KIT 399 (meta ≥3/4 superada) y 0 falsos en las 8 del repo. La causa raíz NO era la ventana/umbral que hipotetizaba la tarjeta: era que PSM 7 sobre la banda recortada nunca lee (tesseract la trata como gráfico) y el umbral de densidad 0.55 fragmentaba la banda real. La franja superior con PSM 3 + validación tipoDesdeBanner lo resuelve con fail-soft intacto.
+- Archivos: motor-ocr.ts, gancho-golden.ts, worklog.md. Evidencia: golden banner 4/4 + tablas arriba.
