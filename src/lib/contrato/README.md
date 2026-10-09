@@ -1,3 +1,6 @@
+<!-- AUTO-GENERADO por `bun run sync:contrato` — NO EDITAR.
+Fuente: digielect@main (src/lib/contrato). Editar en el repo upstream. -->
+
 # `src/lib/contrato/` — SOURCE OF TRUTH del contrato
 
 > Este folder es la única fuente de verdad del contrato de datos/API entre

@@ -1,3 +1,5 @@
+// AUTO-GENERADO por `bun run sync:contrato` — NO EDITAR.
+// Fuente: digielect@main (src/lib/contrato). Editar en el repo upstream.
 // ============================================================
 // CONTRATO DIGIELECT ⇄ DIGITALIZADOR — API de ingesta
 // ============================================================
