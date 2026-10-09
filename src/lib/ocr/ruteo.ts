@@ -195,10 +195,10 @@ export function resolverRuteo(
   if (!mesa) {
     const digitosMesa = soloDigitos(campo("mesa")?.valor ?? "");
     if (digitosMesa) {
-      const candidatasMesa = consulado.mesas.map((m) => String(m.numero).padStart(3, "0"));
+      const mesasDelPuesto = consulado.mesas.map((m) => String(m.numero).padStart(3, "0"));
       const clasifMesa = clasificarConCatalogo(
         digitosMesa,
-        candidatasMesa,
+        mesasDelPuesto,
         campo("mesa")?.confianza ?? 0,
       );
       if (clasifMesa.elegido) {
@@ -231,7 +231,7 @@ export function resolverRuteo(
   r.mesaIdSugerido = mesa.id;
   if (mesaPorCatalogo) {
     r.confianzaGlobal = confianzaGlobal * 0.9;
-    r.motivo = "Mesa clasificada por catálogo (único candidato plausible)";
+    r.motivo = "Mesa clasificada por catálogo (única mesa plausible del puesto)";
     return r;
   }
   r.confianzaGlobal = difusa ? confianzaGlobal * 0.75 : confianzaGlobal;
