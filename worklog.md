@@ -90,3 +90,37 @@ Stage Summary:
 - feat/plan-deteccion-v2 MERGEADA a main y DEPLOYADA a Pages con todas las mejoras T0–T8 + Stitch. CI imprimiendo la tabla golden en cada run (modo medición, sin gate).
 - PENDIENTE (requiere material del usuario): las 4 JPG de corpus-golden/ → copiarlas a tests/golden/corpus/ + public/actas/ (nombres exactos en tests/golden/corpus/README.md), correr golden completo, reportar tabla post-mejoras vs baseline 67.5%. Si ≥80% → activar GOLDEN_STRICT=1 en el paso de CI. Si no → analizar campos fallando antes de tocar código.
 
+
+---
+Task ID: T9
+Agent: Z.ai Code (GLM)
+Task: Corpus Kit 399 al repo + baseline completo documentado
+
+Work Log:
+- Copiadas las 4 JPG del corpus (nombres canónicos ya correctos) a public/actas/ y tests/golden/corpus/ (~0.9-1.1 MB c/u, 200 dpi, 2412×7234 px).
+- Golden OCR en modo medición (dev server :3210 con basePath): 12 casos, 0 SKIP, 13/13 tests passed (1.4 min).
+- Golden del motor: 4/4 (sin regresiones).
+- NO se arregló nada en esta tarjeta (solo medir y documentar).
+
+Stage Summary:
+- Baseline completo REPRODUCE EXACTO la referencia de auditoría (rev. 3d3add8):
+```
+Golden OCR (12 casos × 5 campos DIVIPOL):
+  TOTAL: 41/60 campos correctos (68.3%) · umbral etapa 1 = 80% (48/60) · modo medición
+  Kit 399 (200 dpi):   T-1 4/5 · T-2 4/5 · D-1 3/5 · D-2 3/5   (14/20)
+  Actas repo limpias:  4/5 · 5/5 · 5/5 · 5/5                  (19/20)
+  Actas repo degradadas: 2/5 · 2/5 · 2/5 · 2/5                (8/20)
+  Tiempo OCR zonas+pistas: 244–877 ms/acta (presupuesto 5 s ✓)
+```
+- Señales impresas Kit 399 (objetivo F1.5):
+```
+KIT footer:  4/4 ✓
+Página efectiva (barcode15 O Ver/Pag): 4/4 ✓ (redundancia funciona)
+barcode15:   2/4 (exacto cuando lee: 710003993010102 / …2010202)
+Civ footer:  3/4 (D-2 no lee Civ)
+Banner:      0/4 ✗ (no dispara — tarjeta T11)
+Ver/Pag:     3/4 (T-1 no lee pag)
+```
+- Patrón de fallo DIVIPOL confirmado en ambiente local (transposición de dígitos): mesa 001→100 (D-1), municipio 335→533 (T-2, D-2), departamento 88→08/09 (campo de CONTROL, no clave de ruteo). Tal como medía la auditoría.
+- Archivos tocados: public/actas/E14_KIT399_*.jpg (4, nuevos), tests/golden/corpus/E14_KIT399_*.jpg (4, nuevos), worklog.md.
+- Evidencia: salida completa del golden en la sesión (13 passed; TOTAL 41/60=68.3%); commit e69f831 (índice fase 2) → este commit.
