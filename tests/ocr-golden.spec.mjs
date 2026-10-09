@@ -156,6 +156,24 @@ async function camposResueltos(page, campos, consulados) {
   }, { campos, consulados });
 }
 
+// [CI-flaky] El Service Worker de la PWA recarga la página al activarse;
+// en runners lentos el reload puede caer EN MEDIO de un page.evaluate
+// ("Execution context was destroyed, most likely because of a
+// navigation") — fallo medido en CI con métricas idénticas a local.
+// Reintenta UNA vez re-navegando y re-precalentando el worker.
+async function conReintento(page, thunk) {
+  try {
+    return await thunk();
+  } catch (e) {
+    if (!/Execution context was destroyed|navigation/i.test(String(e?.message ?? e))) throw e;
+    await page.goto(BASE + "/");
+    await page.locator("h1").first().waitFor({ state: "visible", timeout: 20_000 });
+    await page.waitForTimeout(2_500);
+    await page.evaluate(() => window.__digielectOcrGolden.workerOcrRuteo());
+    return await thunk();
+  }
+}
+
 test.beforeAll("gancho golden disponible", async ({ browser }) => {
   const page = await browser.newPage();
   await page.goto(BASE + "/");
@@ -185,8 +203,8 @@ for (const caso of esperado.casos) {
     await page.waitForTimeout(1_500);
     await page.evaluate(() => window.__digielectOcrGolden.workerOcrRuteo());
 
-    const fuente = await fuenteOcr(page, BASE, caso.imagen);
-    const resultado = await page.evaluate(async ({ dataUrl }) => {
+    const fuente = await conReintento(page, () => fuenteOcr(page, BASE, caso.imagen));
+    const resultado = await conReintento(page, () => page.evaluate(async ({ dataUrl }) => {
       const G = window.__digielectOcrGolden;
       const t0 = performance.now();
       const campos = await G.reconocerZonasRuteo(dataUrl, G.ZONAS_RUTEO_E14);
@@ -202,11 +220,11 @@ for (const caso of esperado.casos) {
         banner,
         ms: Math.round(performance.now() - t0),
       };
-    }, { dataUrl: fuente.dataUrl });
+    }, { dataUrl: fuente.dataUrl }));
 
     // [T12] ruteo resuelto con el catálogo real (línea trazable por caso)
-    const consulados = await consuladosDeCatalogo(page);
-    const resuelto = await camposResueltos(page, resultado.campos, consulados);
+    const consulados = await conReintento(page, () => consuladosDeCatalogo(page));
+    const resuelto = await conReintento(page, () => camposResueltos(page, resultado.campos, consulados));
 
     await page.close();
 
@@ -281,14 +299,14 @@ test("umbral de etapa: pass-rate global de los casos ejecutados", async ({ brows
   let okRes = 0;
   const tabla = [];
   for (const caso of ejecutables) {
-    const fuente = await fuenteOcr(page, BASE, caso.imagen);
-    const r = await page.evaluate(async ({ dataUrl }) => {
+    const fuente = await conReintento(page, () => fuenteOcr(page, BASE, caso.imagen));
+    const r = await conReintento(page, () => page.evaluate(async ({ dataUrl }) => {
       const G = window.__digielectOcrGolden;
       const t0 = performance.now();
       const campos = await G.reconocerZonasRuteo(dataUrl, G.ZONAS_RUTEO_E14);
       return { campos, ms: Math.round(performance.now() - t0) };
-    }, { dataUrl: fuente.dataUrl });
-    const resuelto = await camposResueltos(page, r.campos, consulados);
+    }, { dataUrl: fuente.dataUrl }));
+    const resuelto = await conReintento(page, () => camposResueltos(page, r.campos, consulados));
     const digitosEsperados = { departamento: 2, municipio: 3, zona: 2, puesto: 2, mesa: 3 };
     let okCaso = 0;
     for (const [campo, nd] of Object.entries(digitosEsperados)) {
