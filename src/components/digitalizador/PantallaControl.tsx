@@ -6,7 +6,7 @@
 // ============================================================
 
 import { useMemo, useState } from "react";
-import { ChevronDown, Loader2, ScanLine, Search, X } from "lucide-react";
+import { ChevronDown, Download, Loader2, ScanLine, Search, X } from "lucide-react";
 import {
   Accordion,
   AccordionContent,
@@ -23,6 +23,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { fechaBogota } from "@/lib/digitalizador/reglas";
+import { exportarTelemetria, leerTelemetria } from "@/lib/ocr/telemetria";
 import type { ActaDTO, TipoEjemplar } from "@/lib/digitalizador/types";
 import { useDigitalizador } from "@/lib/digitalizador/store";
 import { BadgeEstado, ChipMono, IndicadorEnLinea, RelojBogota } from "./shared";
@@ -91,6 +92,7 @@ function MiniKPI({
 }
 
 export default function PantallaControl() {
+  const [telVacia, setTelVacia] = useState(false);
   const consulados = useDigitalizador((s) => s.consulados);
   const enLinea = useDigitalizador((s) => s.enLinea);
   const cargandoDatos = useDigitalizador((s) => s.cargandoDatos);
@@ -215,6 +217,25 @@ export default function PantallaControl() {
             </div>
           </div>
         </div>
+
+        {/* [F0 · plan-mejora] Export de telemetría OCR (calibración) */}
+        <button
+          type="button"
+          data-testid="exportar-telemetria"
+          onClick={async () => {
+            const n = await leerTelemetria();
+            if (n.length === 0) {
+              setTelVacia(true);
+              setTimeout(() => setTelVacia(false), 2500);
+              return;
+            }
+            await exportarTelemetria();
+          }}
+          className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-ind-outline-variant bg-ind-bg px-3 py-2 text-[10px] font-bold uppercase tracking-wider text-ind-on-surface-var transition-colors hover:bg-ind-high"
+        >
+          <Download className="h-3.5 w-3.5" />
+          {telVacia ? "sin telemetría registrada aún" : "exportar telemetría OCR (calibración)"}
+        </button>
 
         {/* Info del puesto + cambio de sede (libera → vuelve a Inicio) */}
         {puesto ? (

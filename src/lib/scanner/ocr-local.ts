@@ -344,17 +344,22 @@ function encolarReconocimiento(recorte: string): Promise<{ data: { text: string 
 
 /**
  * OCR del tercio superior de la captura ya procesada.
- * Devuelve null si Tesseract no está disponible o falla.
+ * [T2 · plan F1] `fuenteFullRes` (opcional) es el warp de mayor
+ * calidad (sin recomprimir): si llega, se usa como FUENTE del
+ * recorte y del upscale — el OCR siempre consume la mejor imagen
+ * disponible. Devuelve null si Tesseract no está disponible o falla.
  */
 export async function leerSenalesOcr(
-  imagenDataUrl: string
+  imagenDataUrl: string,
+  fuenteFullRes?: string
 ): Promise<SenalesOcr | null> {
   try {
     // Recorte del tercio superior. El ANÁLISIS admite upscale hasta
     // ~1600px de ancho (Tesseract necesita ~30px de altura-x; en
     // entregas de 2400px el impreso queda pequeño). Esto NO altera
     // la imagen entregada: solo la entrada del OCR.
-    const img = await cargarImagen(imagenDataUrl);
+    const fuente = fuenteFullRes || imagenDataUrl;
+    const img = await cargarImagen(fuente);
     const escalaAncho = LADO_OCR / Math.max(img.naturalWidth, 1);
     const escala = Math.min(2.5, Math.max(1, escalaAncho));
     const w = Math.max(1, Math.round(img.naturalWidth * escala));
@@ -367,7 +372,9 @@ export async function leerSenalesOcr(
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "high";
     ctx.drawImage(img, 0, 0, w, canvas.height);
-    const recorte = canvas.toDataURL("image/jpeg", 0.95);
+    // [T2 · plan F1] PNG sin pérdidas: el JPEG q0.95 borroso mataba los
+    // dígitos pequeños del encabezado (doble compresión del warp).
+    const recorte = canvas.toDataURL("image/png");
 
     // [OLA7 · M-11 AN-3] recognize contra el worker singleton,
     // serializado por la cola interna (mismo contrato de siempre:

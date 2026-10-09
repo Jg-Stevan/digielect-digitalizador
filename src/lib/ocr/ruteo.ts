@@ -10,6 +10,7 @@
 // ============================================================
 
 import type { CampoOcr, ConsuladoDTO, OcrRuteo } from "@/lib/contrato/types";
+import { clasificarConCatalogo } from "./ruteo-catalogo";
 import { ZONAS_RUTEO_E14 } from "./zonas-e14";
 
 /** Solo dígitos. */
@@ -102,6 +103,8 @@ export function resolverRuteo(
   const puesto = normalizar(campo("puesto")?.valor ?? "", 2);
   const mesaNum = soloDigitos(campo("mesa")?.valor ?? "").replace(/^0+(?=\d)/, "");
   const mesaN = Number.parseInt(mesaNum || "0", 10);
+  /** [T7] Nota de trazabilidad cuando el país fue clasificado por catálogo */
+  let notasPais: string | null = null;
 
   const confianzas = (["departamento", "municipio", "zona", "puesto", "mesa"] as const)
     .map((id) => campo(id)?.confianza ?? 0)
@@ -139,6 +142,32 @@ export function resolverRuteo(
   let consulado = consulados.find((c) => c.codigo === codigoExacto) ?? null;
   let difusa = false;
 
+  // [T7 · plan F4] RUTEO GUIADO POR CATÁLOGO — país clasificado ENTRE
+  // los países del catálogo (no OCR libre + match). Solo se usa si NO
+  // hubo match exacto/difuso del código completo y el resto de las
+  // claves (zona/puesto) son estructuralmente aceptables: un país mal
+  // leído con zona/puesto bien leídos NO debe caer a contingencia si
+  // existe un ÚNICO país plausiblemente mejor en el catálogo.
+  if (!consulado && !campoFallido) {
+    const paisesCatalogo = Array.from(
+      new Set(consulados.map((c) => String(c.codigo ?? "").split("-")[0])),
+    ).filter((p) => /^\d{3}$/.test(p));
+    const clasifPais = clasificarConCatalogo(
+      campo("municipio")?.valor ?? "",
+      paisesCatalogo,
+      campo("municipio")?.confianza ?? 0,
+    );
+    if (clasifPais.elegido) {
+      const codigoConPais = `${clasifPais.elegido}-${zona}-${puesto}`;
+      const c2 = consulados.find((c) => c.codigo === codigoConPais) ?? null;
+      if (c2) {
+        consulado = c2;
+        difusa = true;
+        notasPais = `país clasificado por catálogo (${clasifPais.elegido}, score ${clasifPais.score.toFixed(2)})`;
+      }
+    }
+  }
+
   // 2) Match difuso (Levenshtein ≤ 1 sobre el codigo completo)
   if (!consulado) {
     for (const c of consulados) {
@@ -157,9 +186,31 @@ export function resolverRuteo(
     return r;
   }
 
-  // 3) Mesa EXACTA por número (nunca difusa: una mesa equivocada
-  //    enruta el acta a la tabla equivocada)
-  const mesa = consulado.mesas.find((m) => m.numero === mesaN) ?? null;
+  // 3) Mesa EXACTA por número… o [T7] clasificada ENTRE las mesas
+  //    REALES del puesto detectado (único candidato plausible).
+  //    (Nunca difusa ciega: una mesa equivocada enruta el acta a la
+  //    tabla equivocada — por eso exige unicidad + margen.)
+  let mesa = consulado.mesas.find((m) => m.numero === mesaN) ?? null;
+  let mesaPorCatalogo = false;
+  if (!mesa) {
+    const digitosMesa = soloDigitos(campo("mesa")?.valor ?? "");
+    if (digitosMesa) {
+      const mesasDelPuesto = consulado.mesas.map((m) => String(m.numero).padStart(3, "0"));
+      const clasifMesa = clasificarConCatalogo(
+        digitosMesa,
+        mesasDelPuesto,
+        campo("mesa")?.confianza ?? 0,
+      );
+      if (clasifMesa.elegido) {
+        const numero = Number.parseInt(clasifMesa.elegido, 10);
+        const m2 = consulado.mesas.find((mm) => mm.numero === numero) ?? null;
+        if (m2) {
+          mesa = m2;
+          mesaPorCatalogo = true;
+        }
+      }
+    }
+  }
   if (!mesa) {
     const r = base();
     r.motivo = `Mesa ${mesaN} no existe en ${consulado.ciudad} (${consulado.numMesas} mesas)`;
@@ -178,7 +229,12 @@ export function resolverRuteo(
 
   const r = base();
   r.mesaIdSugerido = mesa.id;
+  if (mesaPorCatalogo) {
+    r.confianzaGlobal = confianzaGlobal * 0.9;
+    r.motivo = "Mesa clasificada por catálogo (única mesa plausible del puesto)";
+    return r;
+  }
   r.confianzaGlobal = difusa ? confianzaGlobal * 0.75 : confianzaGlobal;
-  r.motivo = difusa ? "Match por distancia 1" : null;
+  r.motivo = difusa ? (notasPais ?? "Match por distancia 1") : notasPais;
   return r;
 }

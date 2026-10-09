@@ -42,3 +42,18 @@ jobs:
           sleep 3
           GOLDEN_BASE_URL=http://localhost:4173/digielect-digitalizador \
             bunx playwright test tests/motor.spec.mjs --reporter=line
+
+      - name: Golden OCR — modo medición (sin GOLDEN_STRICT; tabla en el log)
+        run: |
+          # MEDICIÓN: corre el harness OCR real (T0) sobre el export ya servido.
+          # Sin GOLDEN_STRICT=1 → NO gatea el CI; imprime la tabla pass-rate
+          # por campo en el log del run para comparar vs baseline (67.5%).
+          # Los casos sin JPG en public/actas se saltan solos (corpus Kit 399
+          # pendiente); las 8 actas del repo SÍ corren.
+          # Puerto 4174: el servidor 4173 del paso anterior sigue vivo en el job.
+          mkdir -p site/digielect-digitalizador
+          cp -r out/* site/digielect-digitalizador/
+          bunx serve -l 4174 site --no-clipboard > /dev/null 2>&1 &
+          sleep 3
+          GOLDEN_BASE_URL=http://localhost:4174/digielect-digitalizador \
+            bunx playwright test tests/ocr-golden.spec.mjs --reporter=list

@@ -21,6 +21,21 @@
 // (ej. "335-05-02" = El Cairo) + mesa.numero → mesaId.
 // El campo "departamento" (88 constante) NO participa del match:
 // se lee como control, no como clave.
+//
+// [PLAN-MEJORA v1.1 · F1.5] Señales impresas baratas: el acta trae
+// impreso lo que hoy se sufre decodificando. Dos zonas de PISTA más
+// el banner del ejemplar:
+//   · barcodeImpreso [0.20, 0.040, 0.80, 0.018] — los 15 dígitos
+//     bajo el código de barras + "Ver: 01 Pag: 1 de 2" en la misma
+//     línea → tipo/página/kit/versión SIN decodificar barras.
+//   · footer [0.0, 0.93, 1.0, 0.07] — "No. Form: 399 · KIT 399 ·
+//     Civ 797/798" → cruce KIT↔barcode y voto de página vía mapa
+//     aprendido por kit (NUNCA regla dura).
+//   · banner (banda oscura detectada dinámicamente, pasada INVERTIDA
+//     blanco-sobre-negro) → "TRANSMISION" vs "CÓNSUL/EMBAJADOR".
+// Cajas medidas sobre el corpus Kit 399 (200 dpi, ver
+// tests/golden/esperado-ocr.json → zonasPistas) — regex tolerantes
+// al ruido medido ("Pagit", "Pana", "Pag: tde2", "Ci[vv]").
 // ============================================================
 
 /** Una zona OCR de ruteo sobre el acta rectificada. */
@@ -35,6 +50,18 @@ export interface ZonaOcr {
   confMinima: number;
   /** Relleno a ceros a la izquierda del valor normalizado. */
   digitos: number;
+}
+
+/** [F1.5] Una zona de PISTA impresa: texto libre + patrón esperado.
+ *  No participa del ruteo por catálogo: alimenta la clasificación
+ *  del ejemplar (tipo/página/kit) con votos y cruces. */
+export interface ZonaPistaOcr {
+  id: "barcodeImpreso" | "footer";
+  label: string;
+  box: [number, number, number, number];
+  whitelist: string;
+  /** Modo de segmentación de Tesseract (línea=7, bloque=6). */
+  psm: 6 | 7;
 }
 
 /** Zonas de ruteo del E-14 exterior (calibradas con actas reales).
@@ -91,5 +118,46 @@ export const ZONAS_RUTEO_E14: ZonaOcr[] = [
     whitelist: "0123456789",
     confMinima: 0.72,
     digitos: 3,
+  },
+];
+
+/**
+ * [T2 · PLAN F1] Orden de PROCESAMIENTO de las zonas: mesa → puesto →
+ * zona → municipio → departamento. El presupuesto de 5 s se gasta
+ * primero donde el feedback del jurado es más importante (la mesa es
+ * el campo de mayor prioridad; el departamento 88 es constante de
+ * control). El array ZONAS_RUTEO_E14 queda en orden de documento; el
+ * motor lo reordena con esta lista.
+ */
+export const ORDEN_LECTURA_RUTEO: Array<ZonaOcr["id"]> = [
+  "mesa",
+  "puesto",
+  "zona",
+  "municipio",
+  "departamento",
+];
+
+/**
+ * [F1.5] Zonas de pistas impresas (cajas medidas en corpus Kit 399
+ * 200 dpi — tests/golden/esperado-ocr.json → zonasPistas). Regex
+ * TOLERANTES en senales-impresas.ts (lo que de verdad sale del OCR:
+ * "Pagit", "Pana", "Pag: tde2", "Ci[vv] 797").
+ */
+export const ZONAS_PISTAS_E14: ZonaPistaOcr[] = [
+  {
+    id: "barcodeImpreso",
+    label: "BARCODE IMPRESO",
+    // Línea de dígitos bajo el código de barras + "Ver: 01 Pag: 1 de 2"
+    box: [0.2, 0.04, 0.8, 0.018],
+    whitelist: "0123456789VEDPAGvedpag.:· ",
+    psm: 7,
+  },
+  {
+    id: "footer",
+    label: "PIE DE FORMA",
+    // "No. Form: 399 · KIT 399 · Civ 797/798"
+    box: [0.0, 0.93, 1.0, 0.07],
+    whitelist: "0123456789KITCIVONoFormkitcivon.:/· ",
+    psm: 6,
   },
 ];
