@@ -18,7 +18,7 @@
 | T10 | Cablear fuenteFullRes (OCR desde warp full-res) | ✅ | ver worklog (T10) | 2025-10-09 |
 | T11 | Banner legible (0/4 → ≥3/4, debug con evidencia) | ✅ | ver worklog (T11) | 2025-10-09 |
 | T12 | Rescate anti-transposición por único anagrama | ✅ | ver worklog (T12) | 2025-10-09 |
-| T13 | Cierre: umbral 80% o documentación honesta | ⬜ | — | — |
+| T13 | Cierre: umbral 80% o documentación honesta | ✅ | ver worklog (T13) | 2025-10-09 |
 
 Baseline inicial (medido, T0):
 ```
@@ -190,3 +190,50 @@ Stage Summary:
 - RESCATE ANTI-TRANSPOSICIÓN ACTIVO: mesa y país se rescatan por único anagrama con unicidad estricta (fail-safe intacto, sin adivinanzas). RUTEO RESUELTO 46/60 = 76.7% (meta tarjeta ≥45/60 CUMPLIDA). BONUS: corregido el misroute preexistente 533→535-Beirut del difuso (el acta iba a OTRO PAÍS).
 - Hallazgo para el futuro: Uint8Array-underflow es un patrón de bug peligroso en conteos — revisar otros contadores del repo si existieran (no se encontraron otros con decremento).
 - Archivos: ruteo-catalogo.ts, ruteo.ts, tests/ocr-golden.spec.mjs, worklog.md. Evidencia: tabla de rescates arriba + números 41/60 crudo · 46/60 resuelto.
+
+---
+Task ID: T13
+Agent: Z.ai Code (GLM)
+Task: Cierre — umbral 80% o documentación honesta
+
+Work Log:
+- Golden final (modo medición, 13/13 passed): TOTAL OCR crudo 41/60 (68.3%) · TOTAL RUTEO RESUELTO 46/60 (76.7%). Ninguno alcanza el umbral 48/60 (80%) → GOLDEN_STRICT=1 NO se activa (decisión honesta: no bajar umbrales ni gatear por debajo de la meta; el CI sigue en modo medición imprimiendo AMBAS tablas).
+- Micro-mejora (c) del plan (reconocerZona: B estructural con conf<0.6 → correr C y votar por dígito): implementada y MEDIDA → efecto 0 campos (41/60 crudo · 46/60 resuelto idénticos) con costo extra de OCR en lecturas bajas → REVERTIDA (no se conserva; disciplinado con "cada micro-mejora con su efecto medido").
+- Micro-mejoras (a) d15-espacios y (b) alias no→de: NO aplicables al umbral — levantan SEÑALES (barcode15/Ver/Pag), no campos DIVIPOL; el TOTAL de 60 campos no se movería. Documentadas como mejora opcional futura de señales.
+- FALSAS ALARMA CORREGIDA: al iniciar la sesión reporté "ci.yml corrupto (branches: ain]" — ERA UN ARTEFACTO DE RENDERIZADO del pipeline de salida (el literal `[m` se procesa como secuencia ANSI y se come). El archivo SIEMPRE tuvo `branches: [main]` (verificado con od -c contra HEAD). Sin cambios en ci.yml.
+- FALLOS RESTANTES documentados con su patrón (los 14 campos que faltan para 60/60 resuelto):
+  1. departamento (campo de CONTROL, constante 88 en el exterior): mal leído (08/09/05/95) en ~5-6 de los 60 campos de la medición. Por regla de producto NO es clave de ruteo; "rescatarlo" desde la identidad del consulado sería circular para la métrica (el golden cuenta el campo OCR). Se deja como está.
+  2. Actas DEGRADADAS 81-2 y 355-1: mun 359/399 + pue 07/00 — impresión genuinamente degradada. Sin rescate posible: 359/399 no tienen anagramas en el catálogo (verificado) y 07/00 vs 08 no son transposiciones → fail-safe correcto (contingencia/supervisor, no adivinar). Este es exactamente el comportamiento de diseño.
+  3. Señales Kit 399 (no cuentan en el 60): barcode15 2/4 (espacios internos rompen el run — conservador), Ver/Pag 3/4.
+- Definition of Done Fase 2 (checklist del plan; INSTRUCCIONES-AGENTE.md no vive en el repo — es documento externo del operador):
+  * [x] Corpus Kit 399 en public/actas/ + tests/golden/corpus/ (12 casos, 0 SKIP)
+  * [x] OCR de la app consumiendo warp full-res (T10) con memoria liberada tras extraer
+  * [x] Banner 4/4 en Kit 399 y 0 falsos en las 8 del repo (T11 — supera la meta ≥3/4)
+  * [x] Rescates por único-anagrama activos con lista verificada (T12)
+  * [~] Golden TOTAL documentado: 46/60 resuelto (76.7%) — meta 48/60 NO alcanzada → gate NO activado, fallos documentados (este documento)
+  * [x] lint + tsc + contract tests en verde; ninguna línea editada bajo [SYNC]
+  * [x] Invariantes intactos: no adivinar (unicidad+consistencia), manual no encoge, offline estricto
+  * [x] worklog.md con T9-T13 documentados + tabla antes/después (abajo)
+- Checks finales: lint 0 errores (1 warning preexistente escaner.ts:346) · tsc limpio · test:contrato OK · motor golden 4/4 · warp-fullres 1/1 · golden OCR 13/13.
+- Archivos tocados: worklog.md (solo documentación; el código queda exactamente como en el commit de T12).
+
+Stage Summary:
+- FASE 2 CERRADA con documentación honesta: el gate 80% NO se activa (46/60=76.7% < 48/60). La ruta a 48/60+ pasa por: (1) medir el efecto de OCR full-res real en FOTOS (el golden escanea scans — T10 no cambia sus números por diseño), (2) rescate del campo departamento como control si el producto lo aprueba, (3) mejorar la legibilidad de las degradadas (upstream del escáner).
+
+TABLA ANTES/DESPUÉS (FASE 2):
+| Métrica | Antes (T9 baseline) | Después (T13) | Delta |
+|---|---|---|---|
+| Golden OCR — campos DIVIPOL crudos | 41/60 (68.3%) | 41/60 (68.3%) | = (los rescates operan en ruteo, no en el OCR crudo) |
+| Golden — ruteo RESUELTO (métrica nueva T12) | 41/60* | 46/60 (76.7%) | +5 (país ×3, mesa ×2) |
+| Banner (Kit 399) | 0/4 ✗ | 4/4 ✓ | +4 |
+| Página efectiva (barcode15 O Ver/Pag) | 4/4 | 4/4 | = |
+| barcode15 impreso | 2/4 | 2/4 | = |
+| Ver/Pag impreso | 3/4 | 3/4 | = |
+| KIT footer | 4/4 | 4/4 | = |
+| Civ footer | 3/4 | 3/4 | = |
+| Misroute país por difuso | posible (533→535-Beirut) | CORREGIDO (anagrama antes del difuso) | seguridad |
+| warpFullRes en el flujo real | plumbado muerto (T2 incompleto) | CABLEADO + limpieza de memoria | T2 completado |
+| OCR de la app (fuente) | imagen procesada b/n (doble compresión) | warp full-res (1 compresión, sin filtro) | calidad |
+(* el resuelto antes de T12 existía implícitamente con los mismos fallos: el difuso podía incluso enrutar MAL)
+
+Stage Summary (cierre Fase 2): ver arriba.
