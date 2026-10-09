@@ -46,6 +46,7 @@
 import { withBasePath } from "@/lib/env";
 import type { CampoOcr } from "@/lib/contrato/types";
 import { ORDEN_LECTURA_RUTEO, type ZonaOcr } from "./zonas-e14";
+import { tipoDesdeBanner } from "./senales-impresas";
 
 const TESS = "/ocr/tesseract";
 const TESSDATA = "/ocr/tessdata";
@@ -454,7 +455,172 @@ export function localizarCajaImpresa(
 function buscarBandaBanner(
   bmp: ImageBitmap
 ): [number, number, number, number] | null {
+  return bandasCandidatasBanner(bmp)[0] ?? null;
+}
+
+/** Máximo de cajas banner a intentar (topmost primero — el banner vive
+ *  arriba; los encabezados de sección NIVELACIÓN/CONSTANCIAS quedan
+ *  detrás y solo se prueban si el banner no validó). */
+const MAX_CANDIDATOS_BANNER = 3;
+
+/**
+ * [T11] Cajas candidatas del banner (blanco-sobre-negro), TOPMOST primero.
+ *
+ * Evidencia Kit 399 (worklog T11): el banner real (CÓNSUL/EMBAJADOR /
+ * TRANSMISIÓN) vive en y≈0.040–0.058 con filas de densidad 0.35–0.55
+ * (las letras blancas grandes diluyen el negro) — el umbral vigente
+ * (fila >0.55, media >0.62, ventana desde 0.04) lo fragmentaba en runs
+ * de altura 0.0012 y terminaba aceptando el encabezado "NIVELACIÓN DE
+ * LA MESA" (y≈0.231, dens 0.884), cuyo OCR no da tipo válido → 0/4.
+ *
+ * Nuevos umbrales MEDIDOS: ventana y 0.032–0.35 · fila >0.32 · run alto
+ * 0.006–0.035 · densidad media ≥0.42 · pico ≥0.50 (borde sólido de la
+ * banda). Los falsos candidatos (texto negro-sobre-blanco, encabezados
+ * de sección) se descartan al validar con tipoDesdeBanner() tras el
+ * OCR invertido — fail-soft: ninguno válido → sin señal.
+ */
+function bandasCandidatasBanner(
+  bmp: ImageBitmap
+): Array<[number, number, number, number]> {
   try {
+    const yDesde = 0.032;
+    const yHasta = 0.35;
+    const sy = Math.round(yDesde * bmp.height);
+    const sh = Math.max(8, Math.round((yHasta - yDesde) * bmp.height));
+    const sx = Math.round(0.15 * bmp.width);
+    const sw = Math.max(8, Math.round(0.7 * bmp.width));
+    const W = 200;
+    const escala = W / sw;
+    const H = Math.max(8, Math.round(sh * escala));
+    const canvas = document.createElement("canvas");
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) {
+      liberarCanvas(canvas);
+      return [];
+    }
+    ctx.drawImage(bmp, sx, sy, sw, sh, 0, 0, W, H);
+    const g = grisDe(canvas);
+    liberarCanvas(canvas);
+    if (!g) return [];
+
+    // Densidad de píxeles MUY oscuros por fila (el banner es negro sólido
+    // con texto blanco grande encima — filas 0.35–0.9)
+    const dens = new Float32Array(g.h);
+    for (let y = 0; y < g.h; y++) {
+      let n = 0;
+      for (let x = 0; x < g.w; x++) {
+        if (g.gris[y * g.w + x] < 80) n++;
+      }
+      dens[y] = n / g.w;
+    }
+    // Runs de filas densas con pico sólido (borde de la banda)
+    const filasPorActa = g.h / (yHasta - yDesde);
+    const candidatos: Array<{ a: number; b: number; dens: number }> = [];
+    let a = -1;
+    let acum = 0;
+    let pico = 0;
+    for (let y = 0; y <= g.h; y++) {
+      const denso = y < g.h && dens[y] > 0.32;
+      if (denso) {
+        if (a < 0) {
+          a = y;
+          acum = 0;
+          pico = 0;
+        }
+        acum += dens[y];
+        if (dens[y] > pico) pico = dens[y];
+      }
+      if ((!denso || y === g.h) && a >= 0) {
+        const altoFr = (y - a) / filasPorActa;
+        const dMedia = acum / (y - a);
+        if (
+          altoFr >= 0.006 &&
+          altoFr <= 0.035 &&
+          dMedia >= 0.42 &&
+          pico >= 0.5
+        ) {
+          candidatos.push({ a, b: y - 1, dens: dMedia });
+        }
+        a = -1;
+        acum = 0;
+      }
+    }
+    return candidatos.slice(0, MAX_CANDIDATOS_BANNER).map((m) => {
+      const yTopFr = yDesde + m.a / filasPorActa;
+      const yBotFr = yDesde + (m.b + 1) / filasPorActa;
+      const hFr = Math.max(0.006, yBotFr - yTopFr);
+      return [0.2, Math.max(0, yTopFr - 0.002), 0.6, hFr + 0.004] as [
+        number,
+        number,
+        number,
+        number
+      ];
+    });
+  } catch {
+    return [];
+  }
+}
+
+// ------------------------------------------------------------
+// [T11·DEBUG] Evidencia del banner (expuesto por el gancho golden)
+// ------------------------------------------------------------
+
+export interface DebugBannerRun {
+  /** Fracción Y del inicio/fin del run dentro del acta */
+  y0Fr: number;
+  y1Fr: number;
+  /** Altura del run en fracción del acta */
+  altoFr: number;
+  /** Densidad media de píxeles muy oscuros del run */
+  dens: number;
+  /** ¿Lo acepta la heurística VIGENTE de buscarBandaBanner? */
+  aceptada: boolean;
+  /** Por qué sí/no (para el worklog) */
+  motivo: string;
+}
+
+export interface DebugBanner {
+  /** Banda que devuelve buscarBandaBanner() hoy (null si no dispara) */
+  banda: [number, number, number, number] | null;
+  /** Todos los runs densos (dens>0.40) del tercio superior central */
+  runs: DebugBannerRun[];
+  /** OCR sin invertir sobre la banda (o el mejor run si banda=null) */
+  textoNormal: string | null;
+  /** OCR INVERTIDO sobre la banda (o el mejor run si banda=null) */
+  textoInvertido: string | null;
+  /** Box real usada para ambas pasadas (fracciones) */
+  boxUsada: [number, number, number, number] | null;
+}
+
+/**
+ * [T11·DEBUG] Evidencia del banner sobre una imagen servida: perfiles
+ * de densidad, runs candidatos (con aceptada/motivo según la
+ * heurística vigente) y los textos de AMBAS pasadas OCR. NO altera la
+ * lógica — es instrumentación para el worklog.
+ */
+export async function __debugBanner(imagenUrl: string): Promise<DebugBanner> {
+  const vacio: DebugBanner = {
+    banda: null,
+    runs: [],
+    textoNormal: null,
+    textoInvertido: null,
+    boxUsada: null,
+  };
+  const worker = await workerOcrRuteo();
+  if (!worker) return vacio;
+  let bmp: ImageBitmap | null = null;
+  try {
+    const res = await fetch(imagenUrl);
+    const blob = await res.blob();
+    bmp = await createImageBitmap(blob);
+  } catch {
+    return vacio;
+  }
+
+  try {
+    // ── Perfil de densidad (mismo método que buscarBandaBanner) ──
     const yDesde = 0.04;
     const yHasta = 0.35;
     const sy = Math.round(yDesde * bmp.height);
@@ -470,14 +636,13 @@ function buscarBandaBanner(
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (!ctx) {
       liberarCanvas(canvas);
-      return null;
+      return vacio;
     }
     ctx.drawImage(bmp, sx, sy, sw, sh, 0, 0, W, H);
     const g = grisDe(canvas);
     liberarCanvas(canvas);
-    if (!g) return null;
+    if (!g) return vacio;
 
-    // Densidad de píxeles MUY oscuros por fila (el banner es negro sólido)
     const dens = new Float32Array(g.h);
     for (let y = 0; y < g.h; y++) {
       let n = 0;
@@ -486,39 +651,88 @@ function buscarBandaBanner(
       }
       dens[y] = n / g.w;
     }
-    // Runs de filas densas (banner) — altura plausible de banner
     const filasPorActa = g.h / (yHasta - yDesde);
-    let mejor: { a: number; b: number; dens: number } | null = null;
+    const runs: DebugBannerRun[] = [];
     let a = -1;
     let acum = 0;
-    for (let y = 0; y <= g.h; y++) {
-      const denso = y < g.h && dens[y] > 0.55;
+    const cerrar = (y: number): void => {
+      if (a < 0) return;
+      const altoFr = (y - a) / filasPorActa;
+      const dMedia = acum / Math.max(1, y - a);
+      let aceptada = false;
+      let motivo = "";
+      if (altoFr < 0.008) motivo = `alto ${altoFr.toFixed(4)} < 0.008`;
+      else if (altoFr > 0.06) motivo = `alto ${altoFr.toFixed(4)} > 0.06`;
+      else if (dMedia <= 0.62) motivo = `dens ${dMedia.toFixed(3)} <= 0.62`;
+      else {
+        aceptada = true;
+        motivo = "OK";
+      }
+      runs.push({
+        y0Fr: +(yDesde + a / filasPorActa).toFixed(4),
+        y1Fr: +(yDesde + y / filasPorActa).toFixed(4),
+        altoFr: +altoFr.toFixed(4),
+        dens: +dMedia.toFixed(3),
+        aceptada,
+        motivo,
+      });
+      a = -1;
+      acum = 0;
+    };
+    for (let y = 0; y < g.h; y++) {
+      const denso = dens[y] > 0.55; // umbral de RUN vigente
       if (denso) {
         if (a < 0) {
           a = y;
           acum = 0;
         }
         acum += dens[y];
-      }
-      if ((!denso || y === g.h) && a >= 0) {
-        const altoFr = (y - a) / filasPorActa;
-        if (altoFr >= 0.008 && altoFr <= 0.06) {
-          const dMedia = acum / (y - a);
-          if (dMedia > 0.62 && (!mejor || dMedia > mejor.dens)) {
-            mejor = { a, b: y - 1, dens: dMedia };
-          }
-        }
-        a = -1;
-        acum = 0;
+      } else if (a >= 0) {
+        cerrar(y);
       }
     }
-    if (!mejor) return null;
-    const yTopFr = yDesde + mejor.a / filasPorActa;
-    const yBotFr = yDesde + (mejor.b + 1) / filasPorActa;
-    const hFr = Math.max(0.006, yBotFr - yTopFr);
-    return [0.2, Math.max(0, yTopFr - 0.002), 0.6, hFr + 0.004];
-  } catch {
-    return null;
+    if (a >= 0) cerrar(g.h);
+    // Runs débiles (0.40–0.55) que el umbral de run ni ve: solo para evidencia
+    const banda = buscarBandaBanner(bmp);
+
+    // ── OCR de ambas pasadas sobre la banda (o el mejor run) ──
+    let box: [number, number, number, number] | null = banda;
+    if (!box) {
+      const mejor = runs
+        .filter((r) => r.altoFr >= 0.004)
+        .sort((x, y) => y.dens * y.altoFr - x.dens * x.altoFr)[0];
+      if (mejor) {
+        const hFr = Math.max(0.006, mejor.y1Fr - mejor.y0Fr);
+        box = [0.2, Math.max(0, mejor.y0Fr - 0.002), 0.6, hFr + 0.004];
+      }
+    }
+    let textoNormal: string | null = null;
+    let textoInvertido: string | null = null;
+    if (box && bmp) {
+      const leer = async (invertir: boolean): Promise<string | null> => {
+        const c = recorteDesdeBitmap(bmp!, box!, 1400);
+        if (!c) return null;
+        try {
+          if (invertir) invertirCanvas(c);
+          await worker.setParameters({
+            tessedit_char_whitelist: "ABCDEFGHIJKLMNOPQRSTUVWXYZ/ ",
+            tessedit_pageseg_mode: "7",
+            user_defined_dpi: "300",
+          });
+          const { data } = await worker.recognize(c);
+          return (data.text ?? "").trim() || null;
+        } catch {
+          return null;
+        } finally {
+          liberarCanvas(c);
+        }
+      };
+      textoNormal = await leer(false);
+      textoInvertido = await leer(true);
+    }
+    return { banda, runs, textoNormal, textoInvertido, boxUsada: box };
+  } finally {
+    bmp.close();
   }
 }
 
@@ -760,7 +974,37 @@ export async function reconocerPistas(
   };
 
   try {
-    const bannerBox = buscarBandaBanner(bmp);
+    // [T11·EVIDENCIA] Banner: franja superior completa (título + banda +
+    // encabezado) con PSM 3 — la matriz medida sobre las 4 páginas Kit
+    // 399 (worklog T11) da 4/4 con PSM 3 y 0/4 con PSM 7 sobre la banda
+    // recortada (tesseract trata la banda sólida como gráfico en modo
+    // línea). Dos pasadas (normal e invertida) cubren los dos formatos
+    // del banner: negro-sobre-blanco (scans) y blanco-sobre-negro
+    // (corpus 200 dpi). SOLO vale si tipoDesdeBanner() da un tipo
+    // válido (fail-soft: ninguna → null, sin votos forzados).
+    const banner = await (async (): Promise<string | null> => {
+      // [T11·EVIDENCIA] Dos geometrías de franja × dos pasadas, con
+      // validación tipoDesdeBanner() en cada paso (primera válida gana):
+      //  · f1 [0.15,0.045,0.7,0.09] l2200 → lee TRANSMISIÓN en T-1/T-2
+      //    (matriz afinado: única que lee T-1 con entrada recomprimida)
+      //  · f2 [0.15,0.03,0.7,0.105] l1800 → lee CÓNSUL/EMBAJADOR en D-1
+      //    (f1 no la lee; la matriz original dio 4/4 con esta en el
+      //    bitmap sin recomprimir). La normal cubre banner
+      //    negro-sobre-blanco (scans); la invertida, blanco-sobre-negro
+      //    (corpus 200 dpi). Peor caso (sin banner válido): 4 lecturas.
+      const geometrias: Array<[[number, number, number, number], number]> = [
+        [[0.15, 0.045, 0.7, 0.09], 2200],
+        [[0.15, 0.03, 0.7, 0.105], 1800],
+      ];
+      const whitelist = "ABCDEFGHIJKLMNOPQRSTUVWXYZÁÉÍÓÚÑ/ ";
+      for (const invertir of [false, true]) {
+        for (const [franja, lado] of geometrias) {
+          const texto = await leer(franja, whitelist, "3", invertir, lado);
+          if (texto && tipoDesdeBanner(texto)) return texto;
+        }
+      }
+      return null;
+    })();
     // En serie (el worker de tesseract NO es reentrante)
     const barcodeImpreso = await leer(
       [0.2, 0.04, 0.8, 0.018],
@@ -774,9 +1018,6 @@ export async function reconocerPistas(
       false,
       1600
     );
-    const banner = bannerBox
-      ? await leer(bannerBox, "ABCDEFGHIJKLMNOPQRSTUVWXYZ/ ", "7", true, 1400)
-      : null;
     return { barcodeImpreso, footer, banner };
   } finally {
     bmp.close();

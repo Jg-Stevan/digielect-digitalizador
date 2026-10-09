@@ -108,3 +108,54 @@ export function clasificarConCatalogo(
     unico,
   };
 }
+
+// ------------------------------------------------------------
+// [T12] Rescate anti-transposición por ÚNICO anagrama
+// ------------------------------------------------------------
+
+/** Multiconjunto de dígitos idéntico (misma longitud y mismos dígitos). */
+function mismoMulticonjunto(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  // SIGNED (Int16Array): con Uint8Array el decremento bajo 0 da wraparound
+  // (0-1 → 255) y el chequeo `cuenta[d] < 0` NUNCA dispara — todo parecía
+  // anagrama de todo y la unicidad del rescate moría (bug medido en el
+  // golden: "115"/"120"/… falsos anagramas de "533" → sin rescate).
+  const cuenta = new Int16Array(10);
+  for (let i = 0; i < a.length; i++) cuenta[a.charCodeAt(i) - 48]++;
+  for (let i = 0; i < b.length; i++) {
+    const d = b.charCodeAt(i) - 48;
+    cuenta[d]--;
+    if (cuenta[d] < 0) return false;
+  }
+  return true;
+}
+
+/**
+ * [T12] Rescate anti-transposición (mesa 001→100, país 335→533 — el
+ * patrón de error dominante medido): devuelve la ÚNICA opción del
+ * catálogo que es ANAGRAMA de la lectura (misma longitud, mismo
+ * multiconjunto de dígitos, lectura ≠ opción).
+ *
+ * INVARIANTE (no adivinar): si hay 2+ anagramas posibles → null (sin
+ * rescate); si la lectura ya es una opción exacta → null (nada que
+ * rescatar). Es el rescate MÁS ESTRECHO posible: exige unicidad
+ * estructural y no abre la puerta a Levenshtein-2 general (entre ~95
+ * países nunca es único → adivinanza, PROHIBIDO).
+ */
+export function unicoAnagrama(
+  lectura: string | null | undefined,
+  opciones: string[]
+): string | null {
+  if (!lectura || opciones.length === 0) return null;
+  const l = lectura.replace(/\D/g, "");
+  if (!l) return null;
+  let unico: string | null = null;
+  for (const opcion of opciones) {
+    const o = opcion.replace(/\D/g, "");
+    if (o.length !== l.length || o === l) continue;
+    if (!mismoMulticonjunto(l, o)) continue;
+    if (unico !== null) return null; // 2+ anagramas → sin rescate
+    unico = opcion;
+  }
+  return unico;
+}

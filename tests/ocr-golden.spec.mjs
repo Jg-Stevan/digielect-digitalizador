@@ -35,14 +35,22 @@ const UMBRAL = esperado.umbrales?.etapa1 ?? 0.8;
 async function fuenteOcr(page, base, archivo) {
   return page.evaluate(async ({ base, archivo }) => {
     const cargar = async () => {
-      const img = new Image();
-      img.src = `${base}/actas/${archivo}`;
-      await img.decode();
-      const esc = Math.min(1, 3200 / Math.max(img.naturalWidth, img.naturalHeight));
+      // [robustez post-merge] fetch+blob+createImageBitmap en vez de
+      // HTMLImageElement.decode(): con 12 actas grandes en la MISMA
+      // página, el decode diferido del <img> puede rechazar con
+      // EncodingError por presión de memoria del renderer (ambientes
+      // chicos — CI/runner grande pasa). Los BYTES son idénticos y el
+      // bitmap resultante también: misma fuente píxel-exacta, sin la
+      // caché de decodes del elemento imagen. Sin tocar asserts.
+      const res = await fetch(`${base}/actas/${archivo}`);
+      if (!res.ok) throw new Error(`acta ${archivo}: HTTP ${res.status}`);
+      const bmp = await createImageBitmap(await res.blob());
+      const esc = Math.min(1, 3200 / Math.max(bmp.width, bmp.height));
       const c = document.createElement("canvas");
-      c.width = Math.round(img.naturalWidth * esc);
-      c.height = Math.round(img.naturalHeight * esc);
-      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      c.width = Math.round(bmp.width * esc);
+      c.height = Math.round(bmp.height * esc);
+      c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+      bmp.close();
       return c;
     };
     const c = await cargar();
@@ -112,6 +120,68 @@ function normalizarCampo(valor, digitos) {
   return d.slice(0, digitos).padStart(digitos, "0");
 }
 
+// [T12] RUTEO RESUELTO — los rescates del ruteo (T7/T8/T12) operan en
+// resolverRuteo, no en el OCR crudo: sin esta métrica el efecto de los
+// rescates es invisible para el golden. Se miden DOS totales:
+//   · OCR crudo (semántica T0, gate GOLDEN_STRICT sin cambiar)
+//   · ruteo resuelto (los campos que la app EFECTIVAMENTE enrutaría:
+//     si resolverRuteo sugiere mesa, país/zona/puesto/mesa salen del
+//     catálogo verificado; departamento sigue siendo OCR crudo —
+//     campo de control, no de ruteo)
+async function consuladosDeCatalogo(page) {
+  return page.evaluate(async (base) => {
+    const res = await fetch(`${base}/data/digitalizador-bootstrap.json`);
+    const data = await res.json();
+    return data.consulados ?? [];
+  }, BASE);
+}
+
+async function camposResueltos(page, campos, consulados) {
+  return page.evaluate(({ campos, consulados }) => {
+    const G = window.__digielectOcrGolden;
+    const r = G.resolverRuteo(campos, consulados);
+    const ef = {
+      departamento: campos?.departamento?.valor ?? null,
+      municipio: campos?.municipio?.valor ?? null,
+      zona: campos?.zona?.valor ?? null,
+      puesto: campos?.puesto?.valor ?? null,
+      mesa: campos?.mesa?.valor ?? null,
+    };
+    if (r?.mesaIdSugerido) {
+      for (const c of consulados) {
+        const m = c.mesas?.find((mm) => mm.id === r.mesaIdSugerido);
+        if (m) {
+          const [pais, zona, puesto] = String(c.codigo ?? "").split("-");
+          ef.municipio = pais;
+          ef.zona = zona;
+          ef.puesto = puesto;
+          ef.mesa = String(m.numero).padStart(3, "0");
+          break;
+        }
+      }
+    }
+    return { ef, motivo: r?.motivo ?? null, sugerido: r?.mesaIdSugerido ?? null };
+  }, { campos, consulados });
+}
+
+// [CI-flaky] El Service Worker de la PWA recarga la página al activarse;
+// en runners lentos el reload puede caer EN MEDIO de un page.evaluate
+// ("Execution context was destroyed, most likely because of a
+// navigation") — fallo medido en CI con métricas idénticas a local.
+// Reintenta UNA vez re-navegando y re-precalentando el worker.
+async function conReintento(page, thunk) {
+  try {
+    return await thunk();
+  } catch (e) {
+    if (!/Execution context was destroyed|navigation/i.test(String(e?.message ?? e))) throw e;
+    await page.goto(BASE + "/");
+    await page.locator("h1").first().waitFor({ state: "visible", timeout: 20_000 });
+    await page.waitForTimeout(2_500);
+    await page.evaluate(() => window.__digielectOcrGolden.workerOcrRuteo());
+    return await thunk();
+  }
+}
+
 test.beforeAll("gancho golden disponible", async ({ browser }) => {
   const page = await browser.newPage();
   await page.goto(BASE + "/");
@@ -152,8 +222,8 @@ for (const caso of esperado.casos) {
     await page.waitForFunction(() => Boolean(window.__digielectOcrGolden), null, { timeout: 20_000 });
     await page.evaluate(() => window.__digielectOcrGolden.workerOcrRuteo());
 
-    const fuente = await fuenteOcr(page, BASE, caso.imagen);
-    const resultado = await page.evaluate(async ({ dataUrl }) => {
+    const fuente = await conReintento(page, () => fuenteOcr(page, BASE, caso.imagen));
+    const resultado = await conReintento(page, () => page.evaluate(async ({ dataUrl }) => {
       const G = window.__digielectOcrGolden;
       const t0 = performance.now();
       const campos = await G.reconocerZonasRuteo(dataUrl, G.ZONAS_RUTEO_E14);
@@ -169,7 +239,11 @@ for (const caso of esperado.casos) {
         banner,
         ms: Math.round(performance.now() - t0),
       };
-    }, { dataUrl: fuente.dataUrl });
+    }, { dataUrl: fuente.dataUrl }));
+
+    // [T12] ruteo resuelto con el catálogo real (línea trazable por caso)
+    const consulados = await conReintento(page, () => consuladosDeCatalogo(page));
+    const resuelto = await conReintento(page, () => camposResueltos(page, resultado.campos, consulados));
 
     await page.close();
 
@@ -208,6 +282,7 @@ for (const caso of esperado.casos) {
     }
 
     if (!fuente.quad) fallos.push("quad no detectado por el motor (scan sin fondo): OCR sobre scan crudo");
+    console.log(`  ⛢ ruteo resuelto: ${resuelto.ef.municipio ?? "—"}-${resuelto.ef.zona ?? "—"}-${resuelto.ef.puesto ?? "—"} mesa ${resuelto.ef.mesa ?? "—"} · ${resuelto.sugerido ? (resuelto.motivo ?? "sugerido") : "sin sugerencia"}`);
     console.log(`  ⏱ OCR zonas+pistas: ${resultado.ms} ms · fuente: ${fuente.modo}`);
     test.info().attach("fallos", { body: fallos.length ? fallos.join("\n") : "(sin fallos)", contentType: "text/plain" });
     // T0 = MEDIR (baseline). El gate duro se activa con GOLDEN_STRICT=1
@@ -233,6 +308,7 @@ test("umbral de etapa: pass-rate global de los casos ejecutados", async ({ brows
   await page.locator("h1").first().waitFor({ state: "visible", timeout: 20_000 });
   await page.waitForFunction(() => Boolean(window.__digielectOcrGolden), null, { timeout: 20_000 });
   await page.evaluate(() => window.__digielectOcrGolden.workerOcrRuteo());
+  const consulados = await consuladosDeCatalogo(page);
 
   const ejecutables = esperado.casos.filter((c) =>
     existsSync(join(__dirname, "..", "public", "actas", c.imagen))
@@ -241,15 +317,18 @@ test("umbral de etapa: pass-rate global de los casos ejecutados", async ({ brows
 
   let total = 0;
   let ok = 0;
+  let totalRes = 0;
+  let okRes = 0;
   const tabla = [];
   for (const caso of ejecutables) {
-    const fuente = await fuenteOcr(page, BASE, caso.imagen);
-    const r = await page.evaluate(async ({ dataUrl }) => {
+    const fuente = await conReintento(page, () => fuenteOcr(page, BASE, caso.imagen));
+    const r = await conReintento(page, () => page.evaluate(async ({ dataUrl }) => {
       const G = window.__digielectOcrGolden;
       const t0 = performance.now();
       const campos = await G.reconocerZonasRuteo(dataUrl, G.ZONAS_RUTEO_E14);
       return { campos, ms: Math.round(performance.now() - t0) };
-    }, { dataUrl: fuente.dataUrl });
+    }, { dataUrl: fuente.dataUrl }));
+    const resuelto = await conReintento(page, () => camposResueltos(page, r.campos, consulados));
     const digitosEsperados = { departamento: 2, municipio: 3, zona: 2, puesto: 2, mesa: 3 };
     let okCaso = 0;
     for (const [campo, nd] of Object.entries(digitosEsperados)) {
@@ -260,15 +339,30 @@ test("umbral de etapa: pass-rate global de los casos ejecutados", async ({ brows
       total++;
       if (bien) ok++;
     }
-    tabla.push(`${caso.imagen}: ${okCaso}/5 campos · ${r.ms} ms`);
+    let okCasoRes = 0;
+    for (const [campo, nd] of Object.entries(digitosEsperados)) {
+      const leidoRes = normalizarCampo(resuelto.ef[campo], nd);
+      const esp = normalizarCampo(caso.divipol?.[campo], nd);
+      const bienRes = leidoRes != null && esp != null && leidoRes === esp;
+      if (bienRes) okCasoRes++;
+    }
+    totalRes += 5;
+    okRes += okCasoRes;
+    tabla.push(
+      `${caso.imagen}: ${okCaso}/5 crudo · ${okCasoRes}/5 resuelto · ${r.ms} ms${resuelto.motivo ? ` · ${resuelto.motivo}` : ""}`
+    );
   }
   await page.close();
   const tasa = total > 0 ? ok / total : 0;
+  const tasaRes = totalRes > 0 ? okRes / totalRes : 0;
   console.log("\n===== BASELINE GOLDEN OCR =====");
   for (const fila of tabla) console.log("  " + fila);
-  console.log(`  TOTAL: ${ok}/${total} campos correctos (${(tasa * 100).toFixed(1)}%) · umbral etapa ${(UMBRAL * 100).toFixed(0)}%`);
+  console.log(`  TOTAL (OCR crudo): ${ok}/${total} campos correctos (${(tasa * 100).toFixed(1)}%) · umbral etapa ${(UMBRAL * 100).toFixed(0)}%`);
+  console.log(`  TOTAL (ruteo resuelto): ${okRes}/${totalRes} campos correctos (${(tasaRes * 100).toFixed(1)}%)`);
   console.log("===============================");
-  // [T0] modo medición: el gate duro exige GOLDEN_STRICT=1
+  // [T0] modo medición: el gate duro exige GOLDEN_STRICT=1 (gate sobre
+  // la métrica OCR crudo, semántica T0 intacta; el total resuelto se
+  // imprime para la aceptación T12/T13 y se documenta en el worklog)
   if (process.env.GOLDEN_STRICT === "1") {
     expect(tasa, `pass-rate ${(tasa * 100).toFixed(1)}% < umbral ${(UMBRAL * 100).toFixed(0)}%`).toBeGreaterThanOrEqual(UMBRAL);
   } else {

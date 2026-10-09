@@ -24,7 +24,15 @@ const HEIC2ANY_CDN =
 // del pipeline se auto-limita (warp CAP_DECODE 3200 · preview 1500 ·
 // imagen enviada CAP_PROCESADO 3200): subir el tope SOLO alimenta al
 // OCR de ruteo/señales, sin tocar la calibración del motor.
-const LADO_IMPORT = 5500;
+// [post-merge Fase 2 + Fase 3 · evidencia acta-fiel] El corpus CANÓNICO
+// Kit 399 (200 dpi, PDF: 2412×7234) SUPERABA el tope 5500 → re-encode
+// jpeg 0.92 en la importación → la línea impresa del barcode15 dejaba
+// de leerse EXACTA (medido: barcode15 null con cap5500, exacto con
+// passthrough; Ver/Pag sobrevive) → RN-02 no disparaba y el flujo real
+// quedaba atascado en Revisión. 7600 deja pasar el corpus 200 dpi sin
+// re-encode (los bytes del archivo llegan intactos al OCR) manteniendo
+// el guard de memoria para imágenes absurdamente grandes.
+const LADO_IMPORT = 7600;
 
 /** Compresión en canvas (igual que comprimirImagen de shared.ts) */
 function comprimirDataUrl(dataUrl: string): Promise<string> {

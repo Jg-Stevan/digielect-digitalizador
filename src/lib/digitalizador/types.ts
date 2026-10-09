@@ -42,6 +42,13 @@ export interface CapturaActual {
   /** Origen de la imagen */
   origen: "camara" | "galeria" | "acta-real" | "manual";
   createdAt: number;
+  /**
+   * [T10] dataURL del warp full-res (JPEG q0.92, lado ≤3200, sin filtro
+   * de realce): fuente de máxima calidad para el OCR de zonas y las
+   * pistas impresas. EFÍMERO: se limpia al terminar la extracción
+   * (C-17) — nunca persiste en IndexedDB.
+   */
+  warpFullRes?: string | null;
 }
 
 // ------------------------------------------------------------
