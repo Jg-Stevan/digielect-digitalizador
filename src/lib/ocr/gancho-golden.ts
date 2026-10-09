@@ -14,7 +14,12 @@
 import { reconocerZonasRuteo, reconocerPistas, workerOcrRuteo } from "@/lib/ocr/motor-ocr";
 import { resolverRuteo } from "@/lib/ocr/ruteo";
 import { ZONAS_RUTEO_E14, ZONAS_PISTAS_E14 } from "@/lib/ocr/zonas-e14";
-import { clasificarEjemplar, identificarActa, crearIndiceActas } from "@/lib/identificacion-acta";
+import {
+  clasificarEjemplar,
+  identificarActa,
+  crearIndiceActas,
+  candidatosRescate,
+} from "@/lib/identificacion-acta";
 import { parsearBarcodeImpreso, parsearFooter, tipoDesdeBanner } from "@/lib/ocr/senales-impresas";
 import { clasificarConCatalogo } from "@/lib/ocr/ruteo-catalogo";
 
@@ -27,6 +32,7 @@ if (typeof window !== "undefined") {
     clasificarEjemplar,
     identificarActa,
     crearIndiceActas,
+    candidatosRescate,
     clasificarConCatalogo,
     parsearBarcodeImpreso,
     parsearFooter,
