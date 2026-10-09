@@ -10,7 +10,7 @@
 // ============================================================
 
 import type { CampoOcr, ConsuladoDTO, OcrRuteo } from "@/lib/contrato/types";
-import { clasificarConCatalogo } from "./ruteo-catalogo";
+import { clasificarConCatalogo, unicoAnagrama } from "./ruteo-catalogo";
 import { ZONAS_RUTEO_E14 } from "./zonas-e14";
 
 /** Solo dígitos. */
@@ -168,6 +168,44 @@ export function resolverRuteo(
     }
   }
 
+  // [T12] Rescate anti-transposición del PAÍS — corre ANTES del difuso:
+  // EVIDENCIA (golden T12): el match difuso Levenshtein-1 sobre el
+  // código completo ROBA las transposiciones y enruta MAL — "533-05-02"
+  // matchea con el consulado REAL 535-05-02 (levenshtein 1) y el acta
+  // iría a otro país. El anagrama + UNICIDAD es señal estrictamente
+  // más fuerte (los anagramas de 533 medidos en el catálogo real: solo
+  // 335) y exige que el código armado EXISTA verbatim. Se usa SOLO
+  // para armar el código y verificarlo — nunca inventa dígitos.
+  // SIN guard de campoFallido: las lecturas con dígito espurio (cruda,
+  // conf 0) son EXACTAMENTE el caso objetivo del rescate, y la lectura
+  // del país ya está blindada por unicoAnagrama (misma longitud +
+  // multiconjunto + unicidad + código existente). Un campo distinto en
+  // baja confianza (p.ej. mesa) no dice nada sobre la identidad del
+  // país.
+  if (!consulado) {
+    const paisesCatalogo = Array.from(
+      new Set(consulados.map((c) => String(c.codigo ?? "").split("-")[0])),
+    ).filter((p) => /^\d{3}$/.test(p));
+    // EVIDENCIA (medido): como en la mesa, la zona país (calibrada a 3
+    // dígitos) lee a veces "5331" — un dígito espurio; se intenta
+    // también con la normalización estándar del ruteo (normalizar a 3
+    // dígitos). El rescate sigue exigiendo anagrama único + código
+    // existente — nunca altera lecturas válidas ni inventa dígitos.
+    const paisCrudo = campo("municipio")?.valor ?? "";
+    const anagramaPais =
+      unicoAnagrama(paisCrudo, paisesCatalogo) ??
+      unicoAnagrama(normalizar(paisCrudo, 3), paisesCatalogo);
+    if (anagramaPais) {
+      const codigoConPais = `${anagramaPais}-${zona}-${puesto}`;
+      const c2 = consulados.find((c) => c.codigo === codigoConPais) ?? null;
+      if (c2) {
+        consulado = c2;
+        difusa = true;
+        notasPais = "país rescatado por transposición (único anagrama)";
+      }
+    }
+  }
+
   // 2) Match difuso (Levenshtein ≤ 1 sobre el codigo completo)
   if (!consulado) {
     for (const c of consulados) {
@@ -192,6 +230,7 @@ export function resolverRuteo(
   //    tabla equivocada — por eso exige unicidad + margen.)
   let mesa = consulado.mesas.find((m) => m.numero === mesaN) ?? null;
   let mesaPorCatalogo = false;
+  let mesaPorAnagrama = false;
   if (!mesa) {
     const digitosMesa = soloDigitos(campo("mesa")?.valor ?? "");
     if (digitosMesa) {
@@ -209,6 +248,32 @@ export function resolverRuteo(
           mesaPorCatalogo = true;
         }
       }
+      // [T12] Rescate anti-transposición de la MESA: ÚNICA mesa
+      // anagrama del puesto (p.ej. 100→001 cuando el puesto tiene una
+      // sola mesa). Misma semántica conservadora de mesaPorCatalogo:
+      // confianza ×0.9 y motivo trazable. Si hay 2+ mesas anagrama →
+      // sin rescate (unicoAnagrama devuelve null).
+      // EVIDENCIA (medido): la zona mesa (calibrada a 3 dígitos) lee
+      // a veces "1001" — un dígito espurio; se intenta también con la
+      // normalización estándar del ruteo (normalizar a 3 dígitos, la
+      // MISMA que el resto del módulo). El rescate sigue exigiendo
+      // anagrama único contra mesas reales — nunca altera lecturas
+      // válidas ni inventa dígitos.
+      if (!mesa) {
+        const mesaNorm = normalizar(digitosMesa, 3);
+        const anagramaMesa =
+          unicoAnagrama(digitosMesa, mesasDelPuesto) ??
+          unicoAnagrama(mesaNorm, mesasDelPuesto);
+        if (anagramaMesa) {
+          const numero = Number.parseInt(anagramaMesa, 10);
+          const m2 = consulado.mesas.find((mm) => mm.numero === numero) ?? null;
+          if (m2) {
+            mesa = m2;
+            mesaPorCatalogo = true;
+            mesaPorAnagrama = true;
+          }
+        }
+      }
     }
   }
   if (!mesa) {
@@ -218,11 +283,23 @@ export function resolverRuteo(
     return r;
   }
 
-  // 4) Baja confianza en algún campo → sugerencia CON aviso
+  // 4) Baja confianza en algún campo → sugerencia CON aviso.
+  //    [T12] los motivos de rescate NO se engullen aquí: si hubo
+  //    rescate (mesa anagrama / país anagrama) es la información
+  //    trazable más importante para el supervisor.
   if (campoFallido) {
     const r = base();
     r.mesaIdSugerido = mesa.id;
-    r.motivo = "Algún campo se leyó con baja confianza";
+    const motivos: string[] = [];
+    if (mesaPorAnagrama) {
+      motivos.push("mesa rescatada por transposición (única mesa anagrama del puesto)");
+      r.confianzaGlobal = r.confianzaGlobal * 0.9;
+    }
+    if (notasPais) motivos.push(notasPais);
+    r.motivo =
+      motivos.length > 0
+        ? `${motivos.join(", ")} (campo ${campoFallido} con baja confianza)`
+        : "Algún campo se leyó con baja confianza";
     r.campoFallido = campoFallido;
     return r;
   }
@@ -231,7 +308,9 @@ export function resolverRuteo(
   r.mesaIdSugerido = mesa.id;
   if (mesaPorCatalogo) {
     r.confianzaGlobal = confianzaGlobal * 0.9;
-    r.motivo = "Mesa clasificada por catálogo (única mesa plausible del puesto)";
+    r.motivo = mesaPorAnagrama
+      ? "Mesa rescatada por transposición (única mesa anagrama del puesto)"
+      : "Mesa clasificada por catálogo (única mesa plausible del puesto)";
     return r;
   }
   r.confianzaGlobal = difusa ? confianzaGlobal * 0.75 : confianzaGlobal;

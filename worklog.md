@@ -17,7 +17,7 @@
 | T9 | Corpus Kit 399 al repo + baseline completo | ⬜ | — | — |
 | T10 | Cablear fuenteFullRes (OCR desde warp full-res) | ✅ | ver worklog (T10) | 2025-10-09 |
 | T11 | Banner legible (0/4 → ≥3/4, debug con evidencia) | ✅ | ver worklog (T11) | 2025-10-09 |
-| T12 | Rescate anti-transposición por único anagrama | ⬜ | — | — |
+| T12 | Rescate anti-transposición por único anagrama | ✅ | ver worklog (T12) | 2025-10-09 |
 | T13 | Cierre: umbral 80% o documentación honesta | ⬜ | — | — |
 
 Baseline inicial (medido, T0):
@@ -166,3 +166,27 @@ Work Log:
 Stage Summary:
 - BANNER 4/4 EN KIT 399 (meta ≥3/4 superada) y 0 falsos en las 8 del repo. La causa raíz NO era la ventana/umbral que hipotetizaba la tarjeta: era que PSM 7 sobre la banda recortada nunca lee (tesseract la trata como gráfico) y el umbral de densidad 0.55 fragmentaba la banda real. La franja superior con PSM 3 + validación tipoDesdeBanner lo resuelve con fail-soft intacto.
 - Archivos: motor-ocr.ts, gancho-golden.ts, worklog.md. Evidencia: golden banner 4/4 + tablas arriba.
+
+---
+Task ID: T12
+Agent: Z.ai Code (GLM)
+Task: Rescate anti-transposición por ÚNICO anagrama (mesa y país)
+
+Work Log:
+- ruteo-catalogo.ts: nuevo unicoAnagrama(lectura, opciones) — misma longitud, mismo multiconjunto de dígitos, lectura ≠ opción; devuelve la opción SOLO si es ÚNICA (2+ → null, sin rescate). SIN Levenshtein-2 (prohibido por la tarjeta).
+- ruteo.ts · país: rescate integrado ANTES del match difuso. EVIDENCIA que forzó el orden: el difuso Levenshtein-1 preexistente ROBA las transposiciones — "533-05-02" matchea con el consulado REAL 535-05-02 (Beirut, levenshtein 1) y el acta iba a OTRO PAÍS. Anagrama+unicidad+código-existente es señal estrictamente más fuerte.
+- ruteo.ts · mesa: rescate tras exacto+clasificación (misma semántica mesaPorCatalogo: ×0.9 y motivo trazable).
+- BUG CRÍTICO CORREGIDO en el camino (medido): mismoMulticonjunto usaba Uint8Array — el decremento bajo 0 hace wraparound (0-1 → 255) y el chequeo `cuenta[d] < 0` NUNCA dispara → "115"/"120"/"130"/"135"/"140"/"155" parecían anagramas de "533" → unicidad imposible → rescate país MUERTO. Fix: Int16Array (signed). La mesa funcionaba de casualidad (El Cairo tiene 1 sola mesa).
+- EVIDENCIA de lecturas con dígito espurio (medido): la zona país lee a veces "5331" y la mesa "1001" (4 dígitos, cruda conf 0) — ambos rescates intentan también la normalización estándar del ruteo (normalizar a 3 dígitos, la MISMA del módulo). El rescate sigue exigiendo anagrama único + código existente verbatim.
+- Guard !campoFallido del rescate país RETIRADO (evidencia): las lecturas cruda/conf-0 SON el caso objetivo; la identidad del país ya está blindada por unicidad+existencia; un campo distinto en baja confianza no dice nada del país. Los motivos de rescate ya NO se engullen en la rama "baja confianza" (trazabilidad para el supervisor).
+- Harness golden (tests/ocr-golden.spec.mjs): métrica NUEVA "ruteo resuelto" (los campos que la app EFECTIVAMENTE enrutaría: país/zona/puesto/mesa del catálogo verificado cuando hay sugerencia; departamento sigue siendo OCR crudo — campo de control). El TOTAL OCR crudo y el gate GOLDEN_STRICT conservan la semántica T0 (comparabilidad del baseline); el resuelto se imprime siempre.
+- Unit checks vía gancho (temporales, eliminados tras medir): municipio "533" → El Cairo "país rescatado por transposición (único anagrama)" ✓ (antes Beirut); mesa "100" → "mesa rescatada por transposición" ✓; mesa "1001" → rescatada ✓; lecturas válidas → motivo null (0 rescates que alteren lecturas válidas) ✓.
+- Checks: lint 0 errores (1 warning preexistente) · tsc limpio · test:contrato OK (ruteo.ts tocado — sin /votos|candidat/ fuera de comentarios: se usaron "opciones"/"unicoAnagrama"/"elegido") · golden 13/13.
+- NÚMEROS FINALES: TOTAL OCR crudo 41/60 (68.3%, sin cambios — esperado: los rescates operan en ruteo, no en el OCR) · TOTAL RUTEO RESUELTO 46/60 (76.7%) ≥ meta de la tarjeta 45/60 ✓ (+5: país 533→335 ×2 Kit399 + país 533→335 ×1 81-1 + mesa 100→001 ×2). El auditor medía 45/60 esperado con mesa×2+país×2; nuestro ambiente suma el rescate extra de 81-1 y una mesa menos (varianza OCR ±2 campos declarada normal en el plan).
+- RESCATES ACTIVADOS EN EL GOLDEN (lista de aceptación, corrida t12e): (1) T-1 país 533→335 — iba a Beirut 535-05-02 por difuso, ahora El Cairo ✓ · (2) D-1 país 533→335 ✓ · (3) 81-1 país 533→335 ✓ · (4) T-2 mesa 100→001 ✓ · (5) 495-2 mesa 100→001 ✓ (la lectura de zonas de esa página varió en esta corrida). 0 rescates sobre lecturas ya válidas (verificado con caso de control: lectura exacta → motivo null).
+- Archivos tocados: src/lib/ocr/ruteo-catalogo.ts (unicoAnagrama + fix Int16Array), src/lib/ocr/ruteo.ts (integración país+mesa, orden vs difuso, motivos trazables), tests/ocr-golden.spec.mjs (métrica resuelto), worklog.md.
+
+Stage Summary:
+- RESCATE ANTI-TRANSPOSICIÓN ACTIVO: mesa y país se rescatan por único anagrama con unicidad estricta (fail-safe intacto, sin adivinanzas). RUTEO RESUELTO 46/60 = 76.7% (meta tarjeta ≥45/60 CUMPLIDA). BONUS: corregido el misroute preexistente 533→535-Beirut del difuso (el acta iba a OTRO PAÍS).
+- Hallazgo para el futuro: Uint8Array-underflow es un patrón de bug peligroso en conteos — revisar otros contadores del repo si existieran (no se encontraron otros con decremento).
+- Archivos: ruteo-catalogo.ts, ruteo.ts, tests/ocr-golden.spec.mjs, worklog.md. Evidencia: tabla de rescates arriba + números 41/60 crudo · 46/60 resuelto.
