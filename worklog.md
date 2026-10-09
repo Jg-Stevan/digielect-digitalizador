@@ -14,6 +14,11 @@
 | T6 | Cajas adaptativas | ✅ | f11fdc4 (motor-ocr.ts · localizarCajaImpresa) | 2025-10-09 |
 | T7 | Ruteo por catálogo | ✅ | f11fdc4 (ruteo-catalogo.ts + ruteo.ts) | 2025-10-09 |
 | T8 | Hamming-2 + contingencia asistida | ✅ | f11fdc4 | 2025-10-09 |
+| T9 | Corpus Kit 399 al repo + baseline completo | ⬜ | — | — |
+| T10 | Cablear fuenteFullRes (OCR desde warp full-res) | ⬜ | — | — |
+| T11 | Banner legible (0/4 → ≥3/4, debug con evidencia) | ⬜ | — | — |
+| T12 | Rescate anti-transposición por único anagrama | ⬜ | — | — |
+| T13 | Cierre: umbral 80% o documentación honesta | ⬜ | — | — |
 
 Baseline inicial (medido, T0):
 ```
