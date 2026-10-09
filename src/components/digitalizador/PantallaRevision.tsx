@@ -47,7 +47,9 @@ import {
   calidadAScoreRN02,
   clavePagina,
   detectarBordes,
+  esPaginaLlena,
   evaluarCalidad,
+  fuenteZonasOcrGolden,
   procesarPagina,
   type CalidadWarp,
   type FiltroPagina,
@@ -58,6 +60,11 @@ import {
 import { ZONAS_RUTEO_E14 } from "@/lib/ocr/zonas-e14";
 import { reconocerZonasRuteo } from "@/lib/ocr/motor-ocr";
 import { resolverRuteo, type ResultadoRuteo } from "@/lib/ocr/ruteo";
+// [FASE-3 · T15] Grupo LEÍDO del acta (identificación → ruteo → VLM)
+import {
+  conflictoPuestoActivo,
+  resolverGrupoLeido,
+} from "@/lib/digitalizador/info-acta";
 import { registrarTelemetria } from "@/lib/ocr/telemetria";
 import {
   AlertDialog,
@@ -98,6 +105,9 @@ export default function PantallaRevision() {
   const enviando = useDigitalizador((s) => s.enviando);
   const contexto = useDigitalizador((s) => s.contexto);
   const consulados = useDigitalizador((s) => s.consulados);
+  // [T15] Puesto activo (selección del operario) para el aviso de
+  // conflicto leído vs seleccionado (hueco e).
+  const puestoActivo = useDigitalizador((s) => s.puestoActivo);
   const setRotacion = useDigitalizador((s) => s.setRotacion);
   const setQuad = useDigitalizador((s) => s.setQuad);
   const setCalidadFoto = useDigitalizador((s) => s.setCalidadFoto);
@@ -140,16 +150,33 @@ export default function PantallaRevision() {
   // sobre la preview warpada. Fire-and-forget en segundo plano — el
   // resultado es HINT (el servidor valida). Fallo suave: sin motor →
   // null y el flujo determinista existente manda.
+  // [T16 · cableado fuente OCR] Scan (marco completo): la ORIGINAL
+  // (≥3200) es la fuente fiel — el preview de 1500 degrada los dígitos
+  // de ruteo (la medición del golden usó scan-completo). Foto (recorte
+  // real): manda el preview warpado (alineado con las cajas).
   // ----------------------------------------------------------
   const dataUrlOcr = procesada?.dataUrl ?? null;
   const edicionId = edicion?.id ?? null;
+  const edicionOriginal = edicion?.original ?? null;
+  const marcoCompletoFlag = esPaginaLlena(edicion?.quad ?? null);
   useEffect(() => {
-    if (!dataUrlOcr || !edicionId) return;
+    if (!edicionId) return;
     let cancelado = false;
     setOcrRuteo(null, true);
     void (async () => {
       try {
-        const campos = await reconocerZonasRuteo(dataUrlOcr, ZONAS_RUTEO_E14);
+        // [T16 · cableado fuente de zonas] Punto de operación MEDIDO
+        // por el golden: scan (marco completo) → canvas ≤3200 jpeg
+        // 0.95 de la original (fuenteZonasOcrGolden — réplica exacta
+        // del harness); foto (recorte real) → preview warpado. La
+        // nativa desplaza el punto del ensemble y el preview de 1500
+        // degrada los dígitos: ni una ni otra.
+        let fuente = dataUrlOcr;
+        if (marcoCompletoFlag && edicionOriginal) {
+          fuente = (await fuenteZonasOcrGolden(edicionOriginal)) ?? dataUrlOcr;
+        }
+        if (!fuente || cancelado) return;
+        const campos = await reconocerZonasRuteo(fuente, ZONAS_RUTEO_E14);
         if (cancelado) return;
         const rr: ResultadoRuteo = resolverRuteo(
           campos,
@@ -183,7 +210,7 @@ export default function PantallaRevision() {
     return () => {
       cancelado = true;
     };
-  }, [dataUrlOcr, edicionId, setOcrRuteo]);
+  }, [dataUrlOcr, edicionId, edicionOriginal, marcoCompletoFlag, setOcrRuteo]);
 
   /**
    * [FASE-5] PUERTA DE RUTEO antes de guardar (plan §7.5):
@@ -198,6 +225,13 @@ export default function PantallaRevision() {
     (alContingencia: () => void): boolean => {
       const r = useDigitalizador.getState().ocrRuteo;
       if (!r) return true; // sin OCR disponible — no bloquear (fallo suave)
+      // [T16 · cableado determinista-primero] La identificación O(1)
+      // (código X → índice, EXACTA) es evidencia SUPERIOR al hint de
+      // zonas: un acta IDENTIFICADA no se retiene por un campo de
+      // ruteo ilegible — su mesa ya quedó resuelta localmente y el
+      // servidor valida igual (Invariante: el OCR del dispositivo es
+      // un HINT). El hint no puede vetar a la señal exacta.
+      if (useDigitalizador.getState().senalesLocales.identificada) return true;
       const rr = resolverRuteo(
         {
           departamento: r.campos.departamento,
@@ -248,6 +282,19 @@ export default function PantallaRevision() {
   useEffect(() => {
     const ed = edicion;
     if (!ed || !clave) return;
+    // [T16 · cableado] Esperar al auto-recorte: la detección decide el
+    // quad FINAL (marco completo en scans — ver esPaginaLlena). Procesar
+    // el preview antes dispara la extracción de señales sobre un recorte
+    // PROVISIONAL y el guard del store bloquea la re-extracción (carrera
+    // que perdía el código X del encabezado). El diseño ya cubre la
+    // espera: pill "Ajustando recorte…" + overlay RECONOCIENDO ACTA.
+    if (ed.autoQuadPendiente) return;
+    // [T16 · cableado fuente OCR] Scan (marco completo): la ORIGINAL
+    // (≥3200) es la fuente fiel de la extracción — el preview de 1500
+    // degrada el código X y las pistas impresas (la medición del golden
+    // usó scan-completo). Foto (recorte real): manda el preview warpado
+    // (alineado con las cajas calibradas).
+    const fuenteFull = esPaginaLlena(ed.quad) ? ed.original : undefined;
     const cache = cacheRef.current;
     const hit = cache.get(clave);
     if (hit) {
@@ -255,7 +302,7 @@ export default function PantallaRevision() {
       setPreview(hit.dataUrl);
       setProcesandoPreview(false);
       // [C-17] guard del store evita reruns
-      void useDigitalizador.getState().extraerSenalesLocales(hit.dataUrl);
+      void useDigitalizador.getState().extraerSenalesLocales(hit.dataUrl, fuenteFull);
       return;
     }
     // cache-miss: limpiar ANTES de procesar (evita previews stale)
@@ -290,7 +337,7 @@ export default function PantallaRevision() {
         // [C-17] PLAN TAREA 1: la preview PROCESADA (recorte + B/N) es
         // la entrada del OCR/QR determinista. Fire-and-forget con guard
         // en el store — el operario nunca espera a esto.
-        void useDigitalizador.getState().extraerSenalesLocales(entrada.dataUrl);
+        void useDigitalizador.getState().extraerSenalesLocales(entrada.dataUrl, fuenteFull);
       } catch {
         if (!cancelado) setPreview(ed.original); // degradar: mostrar original
       } finally {
@@ -362,6 +409,8 @@ export default function PantallaRevision() {
   };
 
   const senalesLocales = useDigitalizador((s) => s.senalesLocales);
+  // [T15] Ruteo resuelto (reactivo) para la tarjeta de información.
+  const ocrRuteo = useDigitalizador((s) => s.ocrRuteo);
   // [C-17] PLAN: el barcode15 determinista del OCR local manda sobre
   // el del VLM (misma señal, cero latencia de red, funciona offline).
   const barcodeBruto = senalesLocales.barcode15 ?? analisis?.barcode ?? null;
@@ -736,17 +785,37 @@ export default function PantallaRevision() {
   // ----------------------------------------------------------
   // Datos derivados SOLO para presentación (bandas ámbar/roja)
   // ----------------------------------------------------------
-  const pagConocida = parseado.ok ? parseado.info.pagina : contexto?.pagina ?? null;
+  // [T15] GRUPO LEÍDO: identificación determinista → ruteo resuelto
+  // del OCR de zonas → VLM. Pinta la ruta de la tarjeta ANTES que
+  // la selección/objetivo (hueco a) y alimenta el aviso de conflicto.
+  const leido = resolverGrupoLeido({
+    senalesLocales,
+    ocrRuteo,
+    analisis,
+    consulados,
+  });
+  const conflictoSeleccion = conflictoPuestoActivo(leido, puestoActivo);
+  const pagConocida = parseado.ok ? parseado.info.pagina : senalesLocales.paginaOcr ?? contexto?.pagina ?? null;
   const totalConocido = parseado.ok
     ? parseado.info.totalPaginas
-    : analisis?.totalPaginasLeidas ?? null;
+    : analisis?.totalPaginasLeidas ?? senalesLocales.totalPaginasOcr ?? null;
   const tipoActual = parseado.ok
     ? parseado.tipoEjemplar
-    : contexto?.tipoEjemplar ?? null;
+    : (contexto?.tipoEjemplar ?? senalesLocales.tipoActaOcr ?? senalesLocales.bannerTipo ?? null);
 
   const tituloTarjeta = mesaObjetivo
     ? `MESA ${String(mesaObjetivo.numero).padStart(2, "0")} · ${contexto?.tipoEjemplar ?? ""} P${contexto?.pagina ?? 1}`
     : (() => {
+        // [T15] Título del grupo LEÍDO primero (identificación/ruteo):
+        // el consulado real del acta escaneada, no la selección.
+        if (leido) {
+          const cLeido =
+            consulados.find((c) => c.id === leido.consuladoId) ??
+            (leido.codigo ? consulados.find((c) => c.codigo === leido.codigo) : null) ??
+            null;
+          const nombreLeido = cLeido?.puesto || cLeido?.ciudad;
+          if (nombreLeido) return String(nombreLeido).toUpperCase();
+        }
         // [OLA4 4.9] tolerante a las dos formas del contrato: el servidor
         // manda {consulado, municipio, pais, ciudad} — en el exterior
         // pais=municipio (país) y ciudad=consulado (ciudad sede).
@@ -761,6 +830,26 @@ export default function PantallaRevision() {
   const rutaTarjeta = (() => {
     const pag = pagConocida ?? 1;
     const total = totalConocido ?? 2;
+    // [T15 · hueco a] GRUPO LEÍDO primero: identificación determinista
+    // (código X → índice) o ruteo resuelto del OCR de zonas contra el
+    // catálogo. La selección/objetivo solo pinta si nada se leyó.
+    if (leido) {
+      const cLeido =
+        consulados.find((c) => c.id === leido.consuladoId) ??
+        (leido.codigo ? consulados.find((c) => c.codigo === leido.codigo) : null) ??
+        null;
+      return [
+        cLeido?.pais || cLeido?.ciudad,
+        leido.zona ? `ZONA ${leido.zona}` : null,
+        leido.puesto ? `PUESTO ${leido.puesto}` : null,
+        leido.mesa ? `MESA ${String(leido.mesa).padStart(3, "0")}` : null,
+        tipoActual,
+        `PÁG ${pag} DE ${total}`,
+      ]
+        .filter(Boolean)
+        .join(" > ")
+        .toUpperCase();
+    }
     if (puestoObjetivo && mesaObjetivo) {
       return [
         puestoObjetivo.pais || puestoObjetivo.ciudad,
@@ -950,6 +1039,18 @@ export default function PantallaRevision() {
                   </span>
                 </div>
                 {/* Fila 2: ruta mono del acta */}
+                {/* [T15 · hueco e] ADVERTENCIA: lo LEÍDO contradice el
+                    puesto ACTIVO — aviso visible sin mezclar valores. */}
+                {conflictoSeleccion && (
+                  <p
+                    data-testid="aviso-conflicto-puesto"
+                    className="flex items-center gap-1.5 font-mono text-[9px] font-bold text-warning"
+                  >
+                    <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    EL ACTA CORRESPONDE A OTRO PUESTO: LEÍDO {conflictoSeleccion.leido} VS
+                    SELECCIONADO {conflictoSeleccion.seleccionado}
+                  </p>
+                )}
                 {rutaTarjeta ? (
                   <p
                     className={cn(
@@ -996,14 +1097,16 @@ export default function PantallaRevision() {
                         {senalesLocales.qrFingerprint ? " · QR✓" : ""}
                       </span>
                     )}
-                    {/* [4.7] Kit del barcode15 (parser canónico) — dato
-                        adicional para cotejar contra la hoja física */}
-                    {parseado.ok && (
+                    {/* [4.7] Kit del barcode15 (parser canónico) o del
+                        footer impreso (T15: señal 4/4 en el golden) —
+                        dato adicional para cotejar contra la hoja física */}
+                    {(parseado.ok || senalesLocales.footerKit != null) && (
                       <span
+                        data-testid="chip-kit"
                         className="data-mono rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[9px] font-bold text-neutral-300"
-                        title={`Kit ${parseado.info.kit} · elección ${parseado.info.eleccion} · versión ${parseado.info.version}`}
+                        title={`Kit ${senalesLocales.footerKit ?? (parseado.ok ? Number(parseado.info.kit) : null) ?? "—"}${parseado.ok ? ` · elección ${parseado.info.eleccion} · versión ${parseado.info.version}` : " (footer impreso)"}`}
                       >
-                        KIT {parseado.info.kit}
+                        KIT {senalesLocales.footerKit ?? (parseado.ok ? Number(parseado.info.kit) : null)}
                       </span>
                     )}
                     <span className="data-mono rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-[9px] font-bold text-neutral-300">

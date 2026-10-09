@@ -58,6 +58,9 @@ import {
 } from "@/lib/scanner/actaParser";
 import { leerSenalesOcr } from "@/lib/scanner/ocr-local";
 import { reconocerPistas } from "@/lib/ocr/motor-ocr";
+// [T16 · cableado familia barcode] Validación estructural de la línea
+// impresa antes de promoverla a señal determinista.
+import { parseBarcode15 } from "@/lib/digitalizador/reglas";
 import {
   aprenderCivPorKit,
   civAPagina,
@@ -112,6 +115,10 @@ export interface SenalesLocales {
   footerKit: number | null;
   /** [F1.5] Civ impreso en el footer (página física dentro del kit) */
   footerCiv: number | null;
+  /** [FASE-3 · T15] Banner impreso leído (TERCERA fuente del tipo de
+   *  ejemplar cuando barcode15 y prop del envío no resuelven — la
+   *  señal que el plan T4/T11 hizo viable). Fail-soft: null. */
+  bannerTipo: "TRANSMISION" | "DELEGADOS" | null;
   /** Ubicación identificada (si identificada) */
   ubicacion: {
     mesa: string;
@@ -135,6 +142,7 @@ const SENALES_INICIALES: SenalesLocales = {
   conflictosSenales: [],
   footerKit: null,
   footerCiv: null,
+  bannerTipo: null,
   ubicacion: null,
   extraccionEnCurso: false,
   extraida: false,
@@ -757,7 +765,30 @@ export const useDigitalizador = create<DigitalizadorState>((set, get) => ({
         edicion: { ...actual, quad: quadMarcoCompleto(), quadManual: false, autoQuadPendiente: false },
       });
     } else if (quad) {
-      set({ edicion: { ...actual, quad, quadManual: false, autoQuadPendiente: false } });
+      // [T16 · cableado scan] Sanidad del quad detectado: el motor
+      // encuentra una BANDA INTERNA del acta en los scans (línea
+      // divisoria fuerte — limitación upstream documentada en el
+      // golden: "el motor detecta una banda interna en SCANS") y
+      // devuelve un quad-faja (~15% de altura) que NO es una página.
+      // Warpear la banda enviaba al OCR un fragmento sin encabezado
+      // ni barcode → nada se leía. Una faja < 30% de un eje NO es un
+      // pliego: el acta LLENA el marco del scan → marco completo (la
+      // fuente fiel que mide el golden: scan-completo ≡ warp
+      // marco-completo). Una foto con el acta lejana nunca baja de
+      // ~30% del frame sin caer antes en la puerta de calidad.
+      const xs = quad.map((p) => p.x);
+      const ys = quad.map((p) => p.y);
+      const ancho = Math.max(...xs) - Math.min(...xs);
+      const alto = Math.max(...ys) - Math.min(...ys);
+      const esFajaInterna = alto < 0.3 || ancho < 0.3;
+      set({
+        edicion: {
+          ...actual,
+          quad: esFajaInterna ? quadMarcoCompleto() : quad,
+          quadManual: false,
+          autoQuadPendiente: false,
+        },
+      });
     } else {
       // Sin detección: queda el marco provisional ajustable en Recortar
       set({ edicion: { ...actual, autoQuadPendiente: false } });
@@ -910,6 +941,22 @@ export const useDigitalizador = create<DigitalizadorState>((set, get) => ({
         /* pistas no disponibles: el flujo continúa */
       }
       const votoCiv = civAPagina(footerKit, footerCiv);
+
+      // [T16 · cableado familia barcode] El barcode15 es UNA señal con
+      // DOS sub-fuentes (decodificada del texto + LÍNEA IMPRESA bajo
+      // las barras — 4/4 en el golden). El texto manda; la impresa SOLO
+      // cierra cuando aquel no llegó y ella misma parsea como barcode15
+      // estructuralmente válido (mismo canon que clasificarEjemplar:
+      // discrepancia → conflicto, jamás mezcla). Sin esto, un scan cuyo
+      // texto degrade la línea ("7 100059…") perdía la señal completa y
+      // el envío automático RN-02 nunca disparaba pese a leerse EXACTO
+      // en la zona dedicada.
+      let barcode15Final = senalesBarcode?.barcode15 ?? null;
+      if (!barcode15Final && barcode15Impreso) {
+        const bcImpreso = parseBarcode15(barcode15Impreso);
+        barcode15Final = bcImpreso.ok ? barcode15Impreso : null;
+      }
+
       const clasificacion = clasificarEjemplar({
         textoOcr: texto,
         barcode15: senalesBarcode?.barcode15 ?? null,
@@ -947,7 +994,7 @@ export const useDigitalizador = create<DigitalizadorState>((set, get) => ({
         senalesLocales: {
           codigoX,
           qrFingerprint: qr,
-          barcode15: senalesBarcode?.barcode15 ?? null,
+          barcode15: barcode15Final,
           tipoActaOcr: clasificacion.tipo ?? senalesBarcode?.tipoActa ?? null,
           paginaOcr: clasificacion.pagina ?? senalesBarcode?.pagina ?? null,
           totalPaginasOcr: deTexto ?? senalesBarcode?.totalPaginas ?? null,
@@ -957,6 +1004,7 @@ export const useDigitalizador = create<DigitalizadorState>((set, get) => ({
           conflictosSenales: clasificacion.conflictos,
           footerKit,
           footerCiv,
+          bannerTipo,
           extraccionEnCurso: false,
           extraida: true,
         },

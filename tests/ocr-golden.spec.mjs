@@ -116,7 +116,15 @@ test.beforeAll("gancho golden disponible", async ({ browser }) => {
   const page = await browser.newPage();
   await page.goto(BASE + "/");
   await page.locator("h1").first().waitFor({ state: "visible", timeout: 20_000 });
-  await page.waitForTimeout(1_500); // absorbe el reload del Service Worker
+  // [T16 · robustez] El SW toma control (controllerchange → UN reload
+  // por contexto fresco) en un momento no determinístico (0.5-3 s
+  // medidos): un sleep fijo de 1.5 s pierde la carrera en máquinas
+  // rápidas (el evaluate aterriza en la página recargada ANTES de que
+  // el gancho se re-adjunte). Se espera FUNCIONALMENTE: control del SW
+  // → página recargada → gancho. Sin tocar asserts.
+  await page.waitForFunction(() => navigator.serviceWorker.controller !== null, null, { timeout: 15_000 });
+  await page.locator("h1").first().waitFor({ state: "visible", timeout: 20_000 });
+  await page.waitForFunction(() => Boolean(window.__digielectOcrGolden), null, { timeout: 20_000 });
   const hay = await page.evaluate(() => Boolean(window.__digielectOcrGolden));
   expect(hay, "window.__digielectOcrGolden expuesto por gancho-golden.ts").toBe(true);
   await page.close();
@@ -138,7 +146,10 @@ for (const caso of esperado.casos) {
     const page = await browser.newPage();
     await page.goto(BASE + "/");
     await page.locator("h1").first().waitFor({ state: "visible", timeout: 20_000 });
-    await page.waitForTimeout(1_500);
+    // [T16 · robustez] ídem beforeAll: el reload del SW no es fijo.
+    await page.waitForFunction(() => navigator.serviceWorker.controller !== null, null, { timeout: 15_000 });
+    await page.locator("h1").first().waitFor({ state: "visible", timeout: 20_000 });
+    await page.waitForFunction(() => Boolean(window.__digielectOcrGolden), null, { timeout: 20_000 });
     await page.evaluate(() => window.__digielectOcrGolden.workerOcrRuteo());
 
     const fuente = await fuenteOcr(page, BASE, caso.imagen);
@@ -217,7 +228,10 @@ test("umbral de etapa: pass-rate global de los casos ejecutados", async ({ brows
   const page = await browser.newPage();
   await page.goto(BASE + "/");
   await page.locator("h1").first().waitFor({ state: "visible", timeout: 20_000 });
-  await page.waitForTimeout(1_500);
+  // [T16 · robustez] ídem: el reload del SW no es fijo.
+  await page.waitForFunction(() => navigator.serviceWorker.controller !== null, null, { timeout: 15_000 });
+  await page.locator("h1").first().waitFor({ state: "visible", timeout: 20_000 });
+  await page.waitForFunction(() => Boolean(window.__digielectOcrGolden), null, { timeout: 20_000 });
   await page.evaluate(() => window.__digielectOcrGolden.workerOcrRuteo());
 
   const ejecutables = esperado.casos.filter((c) =>

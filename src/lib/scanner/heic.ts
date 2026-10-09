@@ -17,7 +17,14 @@ import { withBasePath } from "@/lib/env";
 const HEIC2ANY_LOCAL = "/vendor/heic2any/heic2any.min.js";
 const HEIC2ANY_CDN =
   "https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js";
-const LADO_IMPORT = 3200;
+// [T16 · cableado fuente OCR] Tope de importación: el OCR de señales
+// debe consumir la MEJOR fuente disponible (T2). Los scans de acta
+// (1792×5425 ≈ 300dpi) pierden los códigos impresos (barcode15/X) al
+// reducirlos a 3200 — a resolución nativa se leen EXACTOS. El resto
+// del pipeline se auto-limita (warp CAP_DECODE 3200 · preview 1500 ·
+// imagen enviada CAP_PROCESADO 3200): subir el tope SOLO alimenta al
+// OCR de ruteo/señales, sin tocar la calibración del motor.
+const LADO_IMPORT = 5500;
 
 /** Compresión en canvas (igual que comprimirImagen de shared.ts) */
 function comprimirDataUrl(dataUrl: string): Promise<string> {
@@ -26,6 +33,16 @@ function comprimirDataUrl(dataUrl: string): Promise<string> {
     img.onload = () => {
       try {
         const escala = Math.min(1, LADO_IMPORT / Math.max(img.width, img.height));
+        // [T16 · sin re-encode innecesario] Si la imagen ya cabe en el
+        // tope de importación, el paso por canvas SOLO pierde calidad
+        // (jpeg 0.92 sobre los bytes originales: el ruido medido en la
+        // zona MUNICIPIO "5335" nació de esa doble compresión). Se
+        // devuelve la imagen TAL CUAL — la fuente de OCR conserva los
+        // bytes del archivo.
+        if (escala >= 1) {
+          resolve(dataUrl);
+          return;
+        }
         const w = Math.max(1, Math.round(img.width * escala));
         const h = Math.max(1, Math.round(img.height * escala));
         const canvas = document.createElement("canvas");
