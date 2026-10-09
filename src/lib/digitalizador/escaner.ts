@@ -65,9 +65,47 @@ export function quadMarcoCompleto(): Quad {
   ];
 }
 
+/** [FASE-3 · T16] true si el quad cubre ≥90% de ambos ejes (marco
+ *  completo — scan full-frame — o página que LLENA el marco con
+ *  márgenes ~2-5%: quad 96×99% medido en la página 2 del Kit 399):
+ *  la ORIGINAL equivale al warp para el OCR (los desplazamientos
+ *  quedan dentro de la tolerancia de las cajas de zona) y es la
+ *  fuente de MÁXIMA resolución (los dígitos impresos del barcode
+ *  degradan al reducir). Con recorte real (foto lejana <90%), NO:
+ *  manda el warp alineado, no la original. */
+export function esPaginaLlena(quad: Quad | null): boolean {
+  if (!quad) return true; // sin recorte: procesarPagina usa marco completo
+  const xs = quad.map((p) => p.x);
+  const ys = quad.map((p) => p.y);
+  const ancho = Math.max(...xs) - Math.min(...xs);
+  const alto = Math.max(...ys) - Math.min(...ys);
+  return ancho >= 0.9 && alto >= 0.9;
+}
+
 const CAP_PROCESADO = 3200;
 const CAP_DECODE = 3200;
 const CAP_PREVIEW = 1500;
+
+/** [T16] Fuente del OCR de ZONAS: réplica del canvas del golden
+ * (≤3200 lado mayor, jpeg 0.95) — el PUNTO DE OPERACIÓN donde las
+ * cajas de ruteo están medidas (27/40 del baseline). Alimentar la
+ * imagen nativa desplaza el punto del ensemble (acta -2: MESA pasa
+ * a fallar); alimentar el preview de 1500 degrada los dígitos. Se
+ * usa SOLO para el scan (marco completo); la foto usa su preview
+ * warpado (alineado con las cajas calibradas). */
+export async function fuenteZonasOcrGolden(
+  originalUrl: string
+): Promise<string | null> {
+  try {
+    const d = await decodificar(originalUrl);
+    const { ctx } = lienzoDe(d);
+    const url = ctx.canvas.toDataURL("image/jpeg", 0.95);
+    liberarCanvas(ctx.canvas);
+    return url;
+  } catch {
+    return null;
+  }
+}
 
 let uid = 0;
 export function siguienteId(prefijo: string): string {

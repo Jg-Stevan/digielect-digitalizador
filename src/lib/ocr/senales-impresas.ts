@@ -41,7 +41,18 @@ export function parsearBarcodeImpreso(
 
   // d15: primer run de 15 dígitos (el normalizador del repo quita
   // espacios; aquí tomamos el run puro — NUNCA reensamblamos trozos).
-  const d15 = /\d{15}/.exec(plano.replace(/[^\d]/g, " "))?.[0] ?? null;
+  let d15 = /\d{15}/.exec(plano.replace(/[^\d]/g, " "))?.[0] ?? null;
+  // [T16 · ruido medido] El OCR inserta UN espacio DENTRO del número
+  // impreso (medido en la página 2 del Kit 399: "71000399301 0202").
+  // Puente de un solo espacio SOLO si el resultado es un run de
+  // EXACTAMENTE 15 dígitos acotado (la longitud impresa del barcode):
+  // nunca se reensamblan trozos de longitudes libres — un "399 71…"
+  // de 18 dígitos NO se puentea (regla no-adivinar intacta).
+  if (!d15) {
+    const puentado = plano.replace(/(\d) (\d)/g, "$1$2");
+    const m = /(?<!\d)\d{15}(?!\d)/.exec(puentado);
+    if (m) d15 = m[0];
+  }
 
   // Ver: NN — tolerante al ruido medido ("ve01", "Ver 01", "Ver: 01")
   const ver = /v\W{0,2}e\W{0,2}r?\W{0,3}(\d{1,2})/i.exec(plano)?.[1] ?? null;

@@ -47,7 +47,9 @@ import {
   calidadAScoreRN02,
   clavePagina,
   detectarBordes,
+  esPaginaLlena,
   evaluarCalidad,
+  fuenteZonasOcrGolden,
   procesarPagina,
   type CalidadWarp,
   type FiltroPagina,
@@ -148,16 +150,33 @@ export default function PantallaRevision() {
   // sobre la preview warpada. Fire-and-forget en segundo plano — el
   // resultado es HINT (el servidor valida). Fallo suave: sin motor →
   // null y el flujo determinista existente manda.
+  // [T16 · cableado fuente OCR] Scan (marco completo): la ORIGINAL
+  // (≥3200) es la fuente fiel — el preview de 1500 degrada los dígitos
+  // de ruteo (la medición del golden usó scan-completo). Foto (recorte
+  // real): manda el preview warpado (alineado con las cajas).
   // ----------------------------------------------------------
   const dataUrlOcr = procesada?.dataUrl ?? null;
   const edicionId = edicion?.id ?? null;
+  const edicionOriginal = edicion?.original ?? null;
+  const marcoCompletoFlag = esPaginaLlena(edicion?.quad ?? null);
   useEffect(() => {
-    if (!dataUrlOcr || !edicionId) return;
+    if (!edicionId) return;
     let cancelado = false;
     setOcrRuteo(null, true);
     void (async () => {
       try {
-        const campos = await reconocerZonasRuteo(dataUrlOcr, ZONAS_RUTEO_E14);
+        // [T16 · cableado fuente de zonas] Punto de operación MEDIDO
+        // por el golden: scan (marco completo) → canvas ≤3200 jpeg
+        // 0.95 de la original (fuenteZonasOcrGolden — réplica exacta
+        // del harness); foto (recorte real) → preview warpado. La
+        // nativa desplaza el punto del ensemble y el preview de 1500
+        // degrada los dígitos: ni una ni otra.
+        let fuente = dataUrlOcr;
+        if (marcoCompletoFlag && edicionOriginal) {
+          fuente = (await fuenteZonasOcrGolden(edicionOriginal)) ?? dataUrlOcr;
+        }
+        if (!fuente || cancelado) return;
+        const campos = await reconocerZonasRuteo(fuente, ZONAS_RUTEO_E14);
         if (cancelado) return;
         const rr: ResultadoRuteo = resolverRuteo(
           campos,
@@ -191,7 +210,7 @@ export default function PantallaRevision() {
     return () => {
       cancelado = true;
     };
-  }, [dataUrlOcr, edicionId, setOcrRuteo]);
+  }, [dataUrlOcr, edicionId, edicionOriginal, marcoCompletoFlag, setOcrRuteo]);
 
   /**
    * [FASE-5] PUERTA DE RUTEO antes de guardar (plan §7.5):
@@ -206,6 +225,13 @@ export default function PantallaRevision() {
     (alContingencia: () => void): boolean => {
       const r = useDigitalizador.getState().ocrRuteo;
       if (!r) return true; // sin OCR disponible — no bloquear (fallo suave)
+      // [T16 · cableado determinista-primero] La identificación O(1)
+      // (código X → índice, EXACTA) es evidencia SUPERIOR al hint de
+      // zonas: un acta IDENTIFICADA no se retiene por un campo de
+      // ruteo ilegible — su mesa ya quedó resuelta localmente y el
+      // servidor valida igual (Invariante: el OCR del dispositivo es
+      // un HINT). El hint no puede vetar a la señal exacta.
+      if (useDigitalizador.getState().senalesLocales.identificada) return true;
       const rr = resolverRuteo(
         {
           departamento: r.campos.departamento,
@@ -256,6 +282,19 @@ export default function PantallaRevision() {
   useEffect(() => {
     const ed = edicion;
     if (!ed || !clave) return;
+    // [T16 · cableado] Esperar al auto-recorte: la detección decide el
+    // quad FINAL (marco completo en scans — ver esPaginaLlena). Procesar
+    // el preview antes dispara la extracción de señales sobre un recorte
+    // PROVISIONAL y el guard del store bloquea la re-extracción (carrera
+    // que perdía el código X del encabezado). El diseño ya cubre la
+    // espera: pill "Ajustando recorte…" + overlay RECONOCIENDO ACTA.
+    if (ed.autoQuadPendiente) return;
+    // [T16 · cableado fuente OCR] Scan (marco completo): la ORIGINAL
+    // (≥3200) es la fuente fiel de la extracción — el preview de 1500
+    // degrada el código X y las pistas impresas (la medición del golden
+    // usó scan-completo). Foto (recorte real): manda el preview warpado
+    // (alineado con las cajas calibradas).
+    const fuenteFull = esPaginaLlena(ed.quad) ? ed.original : undefined;
     const cache = cacheRef.current;
     const hit = cache.get(clave);
     if (hit) {
@@ -263,7 +302,7 @@ export default function PantallaRevision() {
       setPreview(hit.dataUrl);
       setProcesandoPreview(false);
       // [C-17] guard del store evita reruns
-      void useDigitalizador.getState().extraerSenalesLocales(hit.dataUrl);
+      void useDigitalizador.getState().extraerSenalesLocales(hit.dataUrl, fuenteFull);
       return;
     }
     // cache-miss: limpiar ANTES de procesar (evita previews stale)
@@ -298,7 +337,7 @@ export default function PantallaRevision() {
         // [C-17] PLAN TAREA 1: la preview PROCESADA (recorte + B/N) es
         // la entrada del OCR/QR determinista. Fire-and-forget con guard
         // en el store — el operario nunca espera a esto.
-        void useDigitalizador.getState().extraerSenalesLocales(entrada.dataUrl);
+        void useDigitalizador.getState().extraerSenalesLocales(entrada.dataUrl, fuenteFull);
       } catch {
         if (!cancelado) setPreview(ed.original); // degradar: mostrar original
       } finally {

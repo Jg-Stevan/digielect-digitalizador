@@ -434,14 +434,29 @@ export default function PantallaExito() {
           <dl className="grid grid-cols-3 gap-x-2 gap-y-2.5">
             <InfoCampo testid="info-zona" label="Zona" valor={zona} />
             <InfoCampo testid="info-puesto" label="Puesto" valor={puestoCodigo} />
-            <InfoCampo testid="info-mesa" label="Mesa" valor={mesaNumero} />
+            {/* Mesa en canon E-14 (3 dígitos): el ruteo la trae como
+                número (1) y la identificación como texto ("001") — el
+                valor es el mismo, el formato es el del formulario. */}
+            <InfoCampo
+              testid="info-mesa"
+              label="Mesa"
+              valor={
+                mesaNumero != null
+                  ? String(Number(mesaNumero)).padStart(3, "0")
+                  : null
+              }
+            />
             <InfoCampo testid="info-kit" label="Kit" valor={kit} />
             <InfoCampo
               testid="info-pag"
               label="Página"
               valor={
-                parseado.ok || senalesLocales.paginaOcr != null
-                  ? `PÁG ${parseado.ok ? parseado.info.pagina : senalesLocales.paginaOcr} DE ${totalPaginas ?? "—"}`
+                parseado.ok || senalesLocales.paginaOcr != null || pagina != null
+                  ? `PÁG ${
+                      parseado.ok
+                        ? parseado.info.pagina
+                        : (senalesLocales.paginaOcr ?? pagina)
+                    } DE ${totalPaginas ?? 2}`
                   : null
               }
             />
