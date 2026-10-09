@@ -303,12 +303,15 @@ export default function PantallaRevision() {
       setProcesada(hit);
       setPreview(hit.dataUrl);
       setProcesandoPreview(false);
-      // [C-17] guard del store evita reruns · [T10] warp full-res como
-      // fuente OCR, con fallback [T15/T16] al original del scan (fuenteFull)
-      // cuando el warp full-res no está en caché (liberado o falla el warp).
+      // [C-17] guard del store evita reruns · [T15/T16] el original del
+      // scan (fuenteFull) es la fuente OCR de los scans de página llena
+      // (el barcode15/pistas solo lee EXACTO a resolución nativa — T16);
+      // [T10] el warp full-res queda como fuente de las FOTOS (donde no
+      // hay fuenteFull): mejor que el preview de 1500 (una compresión,
+      // sin filtro). Sin fuenteFull ni warpFullRes → preview procesada.
       void useDigitalizador
         .getState()
-        .extraerSenalesLocales(hit.dataUrl, hit.warpFullRes ?? fuenteFull);
+        .extraerSenalesLocales(hit.dataUrl, fuenteFull ?? hit.warpFullRes ?? undefined);
       return;
     }
     // cache-miss: limpiar ANTES de procesar (evita previews stale)
@@ -344,12 +347,13 @@ export default function PantallaRevision() {
         // [C-17] PLAN TAREA 1: la preview PROCESADA (recorte + B/N) es
         // la entrada del OCR/QR determinista. Fire-and-forget con guard
         // en el store — el operario nunca espera a esto.
-        // [T10] el OCR consume el warp full-res (mejor fuente), con
-        // fallback [T15/T16] al original del scan cuando no hay warp
-        // full-res (ruta sin warp). Limpieza de memoria [T10] intacta.
+        // [T15/T16] el OCR consume el ORIGINAL del scan de página llena
+        // (fuenteFull — el barcode15 solo lee EXACTO a resolución nativa);
+        // [T10] para FOTOS (sin fuenteFull) consume el warp full-res
+        // (mejor fuente que el preview). Limpieza de memoria [T10] intacta.
         void useDigitalizador
           .getState()
-          .extraerSenalesLocales(entrada.dataUrl, entrada.warpFullRes ?? fuenteFull)
+          .extraerSenalesLocales(entrada.dataUrl, fuenteFull ?? entrada.warpFullRes ?? undefined)
           .then(() => {
             // [T10] Memoria: liberar el dataURL full-res tras la
             // extracción (son ~0.3–2 MB; el guard C-17 evita reruns).

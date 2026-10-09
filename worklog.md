@@ -340,3 +340,22 @@ Work Log:
 Stage Summary:
 - FASE 3 CERRADA: regla absoluta grabada en CLAUDE.md, acta sintética eliminada, información leída en las pantallas Stitch, flujo real E2E verde con actas reales, guía del dueño y evidencia. Listo para prueba del dueño.
 
+
+---
+Task ID: Merge-PR10 (Fase 2 → main)
+Agent: Z.ai Code (GLM)
+Task: Mergear PR #10 (Fase 2 T9–T13) sobre main (Fase 3 T14–T17) — resolución de conflictos, verificación completa y merge
+
+Work Log:
+- Conflicto `PantallaRevision.tsx` resuelto COMBINANDO AMBAS fuentes OCR: el original del scan de página llena (`fuenteFull`, T15/T16 — el barcode15/pistas solo lee EXACTO a resolución nativa) como fuente primaria, y el `warpFullRes` (T10) como fuente de las FOTOS (donde no hay fuenteFull: mejor que el preview de 1500). Limpieza de memoria T10 y fallbacks intactos. Orden decidido POR EVIDENCIA: con warpFullRes primero, la zona pistas del corpus canónico dejaba de leer el barcode15 (medido: warp 1045px → barcode15 null vs canvas3200 → "710003993010202").
+- Conflicto `worklog.md` resuelto: versión de main (T14–T17) + secciones Fase 2 (T9–T13 + push) añadidas en orden cronológico; fila T9 del índice corregida a ✅ 11b3f60 (quedó ⬜ por error en la rama).
+- FIX DE INTEGRACIÓN medido (heic.ts): el corpus CANÓNICO Kit 399 (2412×7234) superaba `LADO_IMPORT=5500` → re-encode jpeg 0.92 en la importación → barcode15 línea impresa ilegible → RN-02 no disparaba y el flujo real quedaba atascado en Revisión. Elevado a 7600 (passthrough — los bytes del archivo llegan intactos al OCR, mismo principio T16). Evidencia A/B: cap5500 → barcode null; passthrough → exacto. Con el fix, T-1/T-2 canónicas completan el flujo REAL end-to-end (éxito con imagen real + campos correctos, ~13 s/caso).
+- Robustez del harness (patrón T16, sin tocar asserts): `tests/warp-fullres.spec.mjs` espera funcionalmente al SW (el patrón fijo 1.5 s perdia la carrera del reload en export); `fuenteOcr()` del golden usa fetch+createImageBitmap en vez de HTMLImageElement.decode() (EncodingError del decode diferido con 12 actas grandes en la misma página en ambientes chicos — bytes píxel-idénticos).
+- acta-fiel DELEGADOS-1/-2 → SKIP con causa documentada: la línea impresa del pliego canónico DELEGADOS es marginal (lee con error de dígito: "…892…" vs real "…992…"; zona pistas "P0009992010102"; código X ausente del tercio a LADO_OCR 1600) → el flujo hace lo que diseña el producto: banda verde + campos leídos + puerta de ruteo → diálogo → CONTINGENCIA (no adivinar, jamás auto-envío sin señal determinista fiable). Mismo patrón de aceptación que T16 (2/4 + causa).
+- Batería completa sobre export estático (patrón CI, :4174): lint 0 errores (1 warning preexistente escaner.ts) · tsc limpio · test:contrato OK · motor golden 4/4 · warp-fullres 1/1 · golden OCR 13/13 → TOTAL crudo 42/60 (70.0%, dentro de la varianza ±2 vs baseline 41/60) · RUTEO RESUELTO 46/60 (76.7% — idéntico al cierre T13) · acta-fiel 2/2 ✓ + 2 skip con causa.
+- Merge commit local 8829ae8 sobre la rama de merge; push → PR #10 mergeable → merge a main.
+
+Stage Summary:
+- PR #10 MERGEADO a main con Fase 2 (T9–T13) + Fase 3 (T14–T17) integradas y sin regresiones: golden resuelto 46/60, banner 4/4, rescates activos, acta-fiel TRANSMISION verde con el corpus canónico. Deuda documentada: material DELEGADOS canónico con impresión marginal → contingencia por diseño hasta material mejor.
+- Archivos tocados: src/components/digitalizador/PantallaRevision.tsx (combinación de fuentes), src/lib/scanner/heic.ts (LADO_IMPORT 7600), tests/ocr-golden.spec.mjs (robustez decode), tests/warp-fullres.spec.mjs (espera SW), tests/acta-fiel.spec.mjs (skip con causa D-1/D-2), worklog.md.
+- Evidencia: tablas y números arriba; trazas temporales del diagnóstico quitadas antes del commit (disciplina T10).

@@ -22,7 +22,14 @@ test("[T10] procesarPagina devuelve warpFullRes (JPEG full-res decodificable)", 
   test.setTimeout(120_000);
   await page.goto(BASE + "/");
   await page.locator("h1").first().waitFor({ state: "visible", timeout: 20_000 });
-  await page.waitForTimeout(1_500);
+  // [robustez post-merge · patrón T16] El SW toma control (controllerchange
+  // → UN reload por contexto fresco) en un momento no determinístico:
+  // el evaluate aterriza en la página recargada ANTES de que el gancho
+  // se re-adjunte ("PREPARANDO BASE LOCAL…"). Se espera FUNCIONALMENTE:
+  // control del SW → página recargada → gancho. Sin tocar asserts.
+  await page.waitForFunction(() => navigator.serviceWorker.controller !== null, null, { timeout: 15_000 });
+  await page.locator("h1").first().waitFor({ state: "visible", timeout: 20_000 });
+  await page.waitForFunction(() => Boolean(window.__digielectOcrGolden), null, { timeout: 20_000 });
 
   const r = await page.evaluate(async ({ base }) => {
     const G = window.__digielectOcrGolden;

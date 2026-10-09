@@ -35,14 +35,22 @@ const UMBRAL = esperado.umbrales?.etapa1 ?? 0.8;
 async function fuenteOcr(page, base, archivo) {
   return page.evaluate(async ({ base, archivo }) => {
     const cargar = async () => {
-      const img = new Image();
-      img.src = `${base}/actas/${archivo}`;
-      await img.decode();
-      const esc = Math.min(1, 3200 / Math.max(img.naturalWidth, img.naturalHeight));
+      // [robustez post-merge] fetch+blob+createImageBitmap en vez de
+      // HTMLImageElement.decode(): con 12 actas grandes en la MISMA
+      // página, el decode diferido del <img> puede rechazar con
+      // EncodingError por presión de memoria del renderer (ambientes
+      // chicos — CI/runner grande pasa). Los BYTES son idénticos y el
+      // bitmap resultante también: misma fuente píxel-exacta, sin la
+      // caché de decodes del elemento imagen. Sin tocar asserts.
+      const res = await fetch(`${base}/actas/${archivo}`);
+      if (!res.ok) throw new Error(`acta ${archivo}: HTTP ${res.status}`);
+      const bmp = await createImageBitmap(await res.blob());
+      const esc = Math.min(1, 3200 / Math.max(bmp.width, bmp.height));
       const c = document.createElement("canvas");
-      c.width = Math.round(img.naturalWidth * esc);
-      c.height = Math.round(img.naturalHeight * esc);
-      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      c.width = Math.round(bmp.width * esc);
+      c.height = Math.round(bmp.height * esc);
+      c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height);
+      bmp.close();
       return c;
     };
     const c = await cargar();
