@@ -1,5 +1,20 @@
 # Digitalizador E-14 (PWA del jurado)
 
+## 🚨 REGLA ABSOLUTA — SOLO ACTAS REALES · DISEÑO = STITCH (léela SIEMPRE)
+
+1. **PROHIBIDO generar, re-dibujar o renderizar actas** (de ejemplo, sintéticas,
+   "fiedes al diseño", maqueta o simulacro). En la UI solo se muestra la IMAGEN
+   REAL capturada/escaneada por el flujo real. Ningún componente "dibuja" un acta.
+2. **Los diseños Stitch son LA única fuente visual del producto.** Están
+   implementados como pantallas funcionales (`DigitalizadorApp.tsx` + pantallas de
+   `src/components/digitalizador/`, tokens en `globals.css` §"TOKENS STITCH v2").
+   Son especificaciones para implementar como código, NUNCA imágenes de referencia
+   que quedan sin implementar, y NUNCA un motivo para inventar UI que no está en
+   ellos (antecedente eliminado: el "acta re-dibujada" `ActaDocumento.tsx`).
+3. Toda IA que entre al repo LEE ESTE ARCHIVO COMPLETO antes de tocar código.
+   Duda entre "se ve bien" y "es fiel al diseño Stitch" → gana el diseño Stitch.
+   Duda entre "se ve bien" y "acta real" → gana el acta real.
+
 ## REGLA DE PRODUCTO (no preguntar de nuevo)
 LOS VOTOS (CAMPOS MANUSCRITOS) NO SE LEEN Y NO INTERESAN POR EL MOMENTO.
 No OCRizar manuscritos. Meta: escanear en alta calidad, extraer con precisión
