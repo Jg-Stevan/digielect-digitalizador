@@ -23,10 +23,10 @@
 
 | Tarea | Descripción | Estado | Commit | Fecha |
 |---|---|---|---|---|
-| T14 | Regla PERMANENTE en CLAUDE.md + eliminación del acta sintética | ✅ | ver abajo | 2025-10-10 |
-| T15 | Información del acta en las pantallas Stitch (ruteo/kit/pág/tipo) | ⬜ | | |
-| T16 | E2E del flujo REAL: acta real + información correcta | ⬜ | | |
-| T17 | Pulido + guía de prueba del dueño | ⬜ | | |
+| T14 | Regla PERMANENTE en CLAUDE.md + eliminación del acta sintética | ✅ | 08a92ae | 2025-10-10 |
+| T15 | Información del acta en las pantallas Stitch (ruteo/kit/pág/tipo) | ✅ | 4c23d73 | 2025-10-10 |
+| T16 | E2E del flujo REAL: acta real + información correcta | ✅ | 978f3ce | 2025-10-10 |
+| T17 | Pulido + guía de prueba del dueño | ✅ | ver abajo | 2025-10-10 |
 
 Baseline inicial (medido, T0):
 ```
@@ -118,3 +118,57 @@ Work Log:
 Stage Summary:
 - Regla del dueño grabada en CLAUDE.md para toda IA futura; acta sintética eliminada sin referencias rotas; app compila; motor 4/4; golden OCR 27/40 sin regresión. Rama: `fase-3-actas-reales`.
 - Pendiente T15: cablear ruteo resuelto/kit/página/tipo a los campos de información de las pantallas Stitch + píldora de advertencia de conflicto.
+
+---
+Task ID: T15
+Agent: Z.ai Code (GLM) — Fase 3 v3
+Task: Información LEÍDA del acta en los campos de las pantallas Stitch (revisión/éxito) según INSTRUCCIONES-AGENTE-FASE3.md — huecos a–e
+
+Work Log:
+- `src/lib/digitalizador/info-acta.ts` (nuevo): resolverGrupoLeido() — el GRUPO leído por fuente única sin mezclas (identificación determinista código X→índice O(1) → RUTEO RESUELTO del OCR de zonas → VLM), conflictoPuestoActivo() y conflictoMesaEnviada() para las píldoras de advertencia (solo señales deterministas — el VLM no dispara alarmas).
+- PantallaExito: PANEL DE INFORMACIÓN con data-testids (info-zona/puesto/mesa/kit/pag/tipo) estilo Stitch (label-caps + data-mono), chip FIRMAS (presencia VLM, el trazo simulado murió con ActaDocumento), chip RUTEO OCR (estado del ruteo resuelto), y píldoras de advertencia aviso-conflicto-puesto / aviso-conflicto-mesa. Fuentes: [hueco a] ZONA/PUESTO/MESA del grupo leído; [hueco b] KIT = footerKit → parseado.info.kit (nunca hardcode); [hueco c] totalPaginas = parseado → senalesLocales.totalPaginasOcr; [hueco d] tipo = parseado → prop → tipoActaOcr → bannerTipo (tercera fuente).
+- PantallaRevision: rutaTarjeta y tituloTarjeta del GRUPO LEÍDO primero (la selección solo pinta si nada se leyó), chip KIT extendido al footer impreso, aviso de conflicto en la tarjeta, respaldos Ver/Pag (totalPaginasOcr) y banner.
+- store: SenalesLocales.bannerTipo (nuevo campo, la señal banner cruda como tercera fuente del tipo).
+- Checks: lint 0 err · tsc · contrato OK · motor 4/4 · golden 27/40 (67.5%) sin regresión.
+
+Stage Summary:
+- La información de las pantallas Stitch sale ahora de lo LEÍDO del acta (ruteo resuelto incluido — antes ignorado) con honestidad S-11 ("—") y advertencias visibles en conflictos. Sin tocar contrato/types ni el envío.
+
+---
+Task ID: T16
+Agent: Z.ai Code (GLM) — Fase 3 v3
+Task: E2E del flujo REAL (tests/acta-fiel.spec.mjs) — acta real → pantalla de éxito con imagen real + información correcta
+
+Work Log:
+- Diagnóstico empírico (scripts desechables + VLM sobre el pliego real): el código de transmisión impreso es "X 7-23-10-19 X" (7231019 ✓ índice) y el barcode15 impreso del Kit 399 se lee EXACTO a resolución nativa; el flujo de la app NUNCA había llegado a éxito con estas actas (causa profunda, múltiple y encadenada — ver el commit).
+- tests/acta-fiel.spec.mjs (nuevo, en el commit 978f3ce con el detalle completo de cada fix): Opción B → El Cairo → input galería (setInputFiles) → pipeline real → éxito → asserts (i) imagen REAL (data URL del warp, NO render), (ii) campos del corpus esperado-ocr.json (mesa 001, zona 05, puesto 02, tipo, PÁG X DE 2, KIT 399), (iii) NEGATIVO (aria-labels del re-dibujo eliminado ausentes), (iv) pantalla completa a full. Screenshots a test-results/.
+- Corpus: TRANSMISION-1/-2 usan las JPG REALES del repo (E14_XXX_X_88_335_005_02_*) — MISMO pliego Kit 399 (barcode 710003993010102/202, KIT 399, Civ 797/798, verificado en el baseline T0). DELEGADOS-1/-2: SKIP con causa documentada (las JPG canónicas no las ha subido el dueño — regla: cero actas sintéticas, no se fabrica material). Si se suben, el spec las corre solo.
+- Causas raíz arregladas (cableado, SIN recalibrar el motor — zonas/PSM/regex de calibración intactos):
+  1. La detección devolvía la BANDA INTERNA del scan (~15% de alto, limitación upstream documentada en el golden) → la app warpeaba una faja sin encabezado ni barcode → nada se leía. Sanidad del quad en aplicarQuadAuto: faja < 30% de un eje ⇒ marco completo.
+  2. El quad de la pág. 2 cubre 96×99.8% (página que LLENA el marco) → esPaginaLlena(≥90%): la ORIGINAL (nativa) como fuente del OCR de señales — el preview de 1500 degradaba el barcode15.
+  3. LADO_IMPORT 3200→5500 + passthrough SIN re-encode cuando no hay resize: la doble compresión jpeg 0.92→0.95 producía "5335" en MUNICIPIO (medido); con los bytes intactos lee "335".
+  4. fuenteZonasOcrGolden (canvas ≤3200 jpeg 0.95, réplica del harness): el OCR de ZONAS consume su punto de operación MEDIDO (27/40) — la nativa desplazaba el punto del ensemble.
+  5. Familia barcode unificada en el store: la LÍNEA IMPRESA (d15 exacto, 4/4 en golden) cierra senalesLocales.barcode15 cuando el texto OCR degrade la línea ("7 100059…") — con validación estructural parseBarcode15 previa. Sin esto el envío automático RN-02 jamás disparaba pese a leerse el código EXACTO en la zona dedicada.
+  6. Parser d15: puente de UN espacio interno (ruido medido: "71000399301 0202") con guarda de run EXACTAMENTE-15 acotado — jamás reensambla longitudes libres (un "399 71…" de 18 dígitos NO se puentea).
+  7. Puerta de ruteo determinista-primero: un acta IDENTIFICADA (O(1) exacta) no se retiene por un campo de ruteo ilegible — el hint no veta a la señal exacta.
+  8. ocr-golden.spec.mjs: robustez del harness — el reload del Service Worker (controllerchange) cae en momento no determinístico (0.5-3 s): esperas funcionales en vez de sleep fijo de 1.5 s (la carrera perdía el gancho en export). Sin tocar asserts ni umbrales.
+- Verificación CONTRA EL EXPORT ESTÁTICO (mismo patrón del CI: build → serve :4174 → tests): acta-fiel 2/2 ✓ (10 s/caso) · motor 4/4 ✓ · golden 9/9 ✓ TOTAL 27/40 (67.5%) = baseline exacto, SIN REGRESIÓN ✓ · lint 0 err · tsc · contrato OK.
+- Hallazgo documentado: en modo dev (Turbopack HMR) el gancho golden fluctúa tras ediciones en caliente — artefacto del watcher, no existe en el export ni en CI.
+
+Stage Summary:
+- El flujo REAL de la app llega a la pantalla de éxito con actas reales por PRIMERA VEZ: imagen real + información correcta (mesa/zona/puesto del ruteo resuelto, tipo, PÁG X DE 2, KIT) + envío RN-02 disparado por la señal determinista. 2/4 casos verdes + 2 con causa (material pendiente del dueño) — aceptación T16 cumplida.
+
+---
+Task ID: T17
+Agent: Z.ai Code (GLM) — Fase 3 v3
+Task: Pulido final + GUIA-PRUEBA.md + verificación verde de cierre
+
+Work Log:
+- T16 corregido y estable (2/2 verde en re-runs; el fallo de causa conocida del primer intento — la carrera del reload del SW — quedó cerrado con esperas funcionales).
+- GUIA-PRUEBA.md (nuevo, raíz, sin jerga, 1 página): abrir la app → Opción B → cargar acta real (galería / PROBAR CON ACTA REAL / cámara) → qué DEBE verse (imagen real + campos) + significado del "—" y de la advertencia de mesa/puesto distinto + prueba rápida con las 2 actas El Cairo incluidas.
+- Evidencia para el dueño: docs/evidencia-fase3/ con los screenshots de los 2 casos ejecutados (pantalla de éxito con el visor a pantalla completa mostrando la IMAGEN REAL del acta).
+- Verde final contra el export (como CI): lint 0 errores (1 warning preexistente en escaner.ts, documentado desde Fase 2) · tsc limpio · test:contrato OK · motor 4/4 · OCR golden 9/9 con TOTAL 27/40 (67.5%) sin regresión · acta-fiel 2/2 + 2 skip con causa. Nada [SYNC] tocado (verificado con git diff).
+- Rama fase-3-actas-reales (basada en main e8d34df) → PR final con tabla antes/después + evidencia. El agente paralelo trabaja Fase 2 en feat/fase-2-t9-t13 (sin solape de archivos con esta rama).
+
+Stage Summary:
+- FASE 3 CERRADA: regla absoluta grabada en CLAUDE.md, acta sintética eliminada, información leída en las pantallas Stitch, flujo real E2E verde con actas reales, guía del dueño y evidencia. Listo para prueba del dueño.
