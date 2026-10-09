@@ -24,3 +24,11 @@ dev.log
 *.log
 tool-results/
 upload/
+
+# ZIP de entrega (se regenera por sesión — no versionar)
+/public/proyecto-fuente-digielect.zip
+
+# Artefactos de Playwright
+test-results/
+playwright-report/
+blob-report/
